@@ -1,0 +1,21 @@
+{
+  "name": "@allodium/from-directus",
+  "version": "0.0.1",
+  "description": "The Directus exit ramp: schema puller (field-metadata aware), data importer (argon2 hashes port — zero password resets), and a readItems-shaped compat shim for route-by-route porting.",
+  "license": "MIT",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": ["dist"],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "engines": { "node": ">=20" }
+}
