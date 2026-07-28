@@ -1,16 +1,19 @@
 /**
- * @allodium/admin — the headline module (planned; lands after the data/auth/storage kits
- * are battle-tested in production).
+ * @allodium/admin — the two-lane admin kit.
  *
- * Thesis: your Drizzle schema already knows every table, column type, relation, and enum.
- * A CMS admin should be GENERATED from that — list views, detail forms, relation pickers,
- * enum selects — rather than defined again in a second config language (the Directus/
- * Payload pattern this project exists to avoid). Bring-your-own UI shell; a react-admin
- * dataProvider adapter is the likely first renderer.
+ * Thesis: your Drizzle schema already knows every table, column type, relation, and
+ * secret. An admin surface should be GENERATED from that — never defined again in a
+ * second config language that can drift.
+ *
+ * 0.1.x ships the foundation, extracted from the reference deployment's developer
+ * console: the schema-driven table registry (runtime metadata + FK graph + secret-column
+ * masking). The generated-UI lane — list views, detail forms, relation pickers on top of
+ * this registry — is the package's second half and lands in a later minor.
  */
 
-export const ADMIN_PACKAGE_STATUS = 'planned' as const;
-
-export function version(): string {
-  return '0.0.1';
-}
+export {
+  createTableRegistry,
+  type TableRegistry,
+  type RegisteredTable,
+  type RegistryColumn,
+} from './registry.js';

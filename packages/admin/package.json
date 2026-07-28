@@ -1,6 +1,6 @@
 {
   "name": "@allodium/admin",
-  "version": "0.0.1",
+  "version": "0.1.0",
   "description": "Schema-driven CRUD admin generated from your Drizzle schema — no parallel config language.",
   "license": "MIT",
   "type": "module",
@@ -12,10 +12,20 @@
       "import": "./dist/index.js"
     }
   },
-  "files": ["dist"],
+  "files": [
+    "dist"
+  ],
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
-  "engines": { "node": ">=20" }
+  "engines": {
+    "node": ">=20"
+  },
+  "peerDependencies": {
+    "drizzle-orm": ">=0.38.0"
+  },
+  "devDependencies": {
+    "drizzle-orm": "^0.45.0"
+  }
 }
