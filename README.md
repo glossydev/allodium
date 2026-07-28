@@ -4,7 +4,7 @@
 
 A sovereign, MIT-licensed headless CMS toolkit for **Next.js + Postgres**. Your Drizzle schema *is* the CMS config — the data layer, auth, storage, and admin tooling all flow from it. No license keys, no telemetry, nothing to rent, nothing that can be taken back.
 
-**Status: early.** Allodium is being extracted, module by module, from a production SaaS. Every package earns its place by running live in that product before it lands here.
+**Status: early, and real.** Allodium is extracted, module by module, from a production SaaS — every package below at 0.1.x is code that product runs in production today, published only after the extraction was verified against live traffic.
 
 ## The idea: two lanes, and one builds the other
 
@@ -26,10 +26,10 @@ Developers get raw, fast, and honest; operators get an interface shaped like the
 
 | Package | What it is | Status |
 |---|---|---|
-| `@allodium/db` | Postgres data-layer conventions on Drizzle + node-postgres: pooling, transactions, typed query-module patterns, migration workflow | scaffolding |
-| `@allodium/auth` | First-party auth you own: argon2 passwords, session store, rotating refresh, Google/generic OIDC, WebAuthn passkeys, reset emails, org/tenant membership | scaffolding |
-| `@allodium/storage` | Storage driver interface (local-disk now, S3-compatible later) + auth-aware asset serving | scaffolding |
-| `@allodium/admin` | The two-lane story above: the schema-driven developer console, and the toolkit for generating bespoke admins from it | planned |
+| `@allodium/db` | Postgres data-layer conventions on Drizzle + node-postgres: pooling, wire-shape mappers (snake_case + ISO-timestamp contract preservation, the pg text-timestamp normalizer family), unique-violation classification with cause-chain walking | **0.1.x — in production** |
+| `@allodium/auth` | First-party auth you own, all factories: argon2id passwords (Directus-hash compatible — zero forced resets), session store with atomic single-use refresh rotation and cross-surface origin scoping, self-invalidating HMAC reset tokens, session-cookie triple, sliding-window rate limiting | **0.1.x — in production** |
+| `@allodium/storage` | Three-method byte-store driver (local-disk now, S3-compatible later) + safe-serving helpers: inline-safe type set with the stored-XSS guard, RFC 5987 dispositions, protected-vs-public cache split | **0.1.x — in production** |
+| `@allodium/admin` | The two-lane story above. 0.1.x is the foundation: the schema-driven table registry (runtime Drizzle metadata + FK graph + secret-column masking, zero per-table config). The generated-UI lane lands next | **0.1.x — in production** |
 | `@allodium/from-directus` | Migration tooling for teams arriving from Directus: schema puller (recovers field metadata into typed Drizzle), data importer (password hashes port intact — zero forced resets), and a compat shim for porting routes one at a time | scaffolding |
 
 ## Migrating from an existing CMS?
