@@ -1,36 +1,39 @@
 /**
  * @allodium/auth — first-party authentication you own outright.
  *
- * Being extracted from a production Next.js SaaS (custom WebAuthn passkeys, Google OIDC,
- * argon2 password sessions, rotating refresh tokens) as its Directus migration proceeds.
- * The design contract, so consumers can build against it today:
+ * Extracted from a production Next.js SaaS as its headless-CMS migration completed:
+ * argon2id passwords (Directus-hash compatible — zero password resets), a session store
+ * with single-use atomic refresh rotation and cross-surface origin scoping, stateless
+ * HMAC reset tokens that self-invalidate on password change, sliding-window rate
+ * limiting, and the session-cookie triple with Domain-correct clearing.
  *
- * - Passwords: argon2id via `node-argon2`. Directus-compatible: hashes produced by
- *   Directus verify unchanged (parameters are read from the hash string), so migrations
- *   require zero password resets.
- * - Sessions: server-side session rows (id, user_id, token hash, device label, expiry),
- *   httpOnly cookies, multiple concurrent sessions per user.
- * - Refresh: short-lived access + rotating single-use refresh, with single-flight
- *   middleware guidance for the rotation race (or sliding sessions — your choice).
- * - OIDC: provider-agnostic authorization-code flow (Google first), same-domain
- *   callbacks, one-identity-per-provider policy hooks.
- * - Passkeys: @simplewebauthn-based ceremonies; credentials in your Postgres.
- * - Reset: single-use hashed tokens + your SMTP; anti-enumeration (always-200) contract.
- * - Tenancy: membership/role helpers for the org-per-row multi-tenant pattern.
+ * Everything is a factory taking explicit config — no env vars are read in here, no
+ * framework imports. Your app binds names, secrets, and tables once and re-exports;
+ * OIDC and WebAuthn ceremony helpers arrive in a later minor.
  */
 
-export const AUTH_PACKAGE_STATUS = 'scaffolding' as const;
-
-/** The session shape consumers can rely on across versions. */
-export interface AllodiumSession {
-  id: string;
-  userId: string;
-  createdAt: Date;
-  expiresAt: Date;
-  deviceLabel?: string | null;
-}
-
-/** Placeholder to keep the package importable while extraction proceeds. */
-export function version(): string {
-  return '0.0.1';
-}
+export { hashPassword, verifyPassword, DUMMY_ARGON2ID_HASH } from './passwords.js';
+export { createRateLimiter, type RateLimiter } from './rateLimit.js';
+export {
+  signPayload,
+  verifySignedPayload,
+  createResetTokens,
+  makeStateToken,
+  readStateToken,
+  type ResetTokenPayload,
+  type ResetTokens,
+} from './signedTokens.js';
+export {
+  createSessionCookies,
+  type SessionCookieNames,
+  type SessionCookieBase,
+  type CookieSetter,
+  type SessionCookies,
+} from './cookies.js';
+export {
+  createSessionStore,
+  type SessionStore,
+  type MintedSession,
+  type OriginScope,
+} from './sessions.js';
+export { firstForwardedIp } from './ip.js';

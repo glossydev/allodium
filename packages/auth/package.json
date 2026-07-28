@@ -1,6 +1,6 @@
 {
   "name": "@allodium/auth",
-  "version": "0.0.1",
+  "version": "0.1.0",
   "description": "First-party auth you own: argon2 passwords, session store, rotating refresh, OIDC, WebAuthn passkeys, reset emails, tenant membership.",
   "license": "MIT",
   "type": "module",
@@ -12,10 +12,23 @@
       "import": "./dist/index.js"
     }
   },
-  "files": ["dist"],
+  "files": [
+    "dist"
+  ],
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
-  "engines": { "node": ">=20" }
+  "engines": {
+    "node": ">=20"
+  },
+  "peerDependencies": {
+    "argon2": ">=0.31.0",
+    "drizzle-orm": ">=0.38.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "argon2": "^0.44.0",
+    "drizzle-orm": "^0.45.0"
+  }
 }
