@@ -52,8 +52,8 @@ via `--workspaces --if-present`. Node >= 20.
 Registered in the GlossyDevServer registry as external **deployment 16** (registry of
 record only; nothing hosted, no analytics — it's a library). Agent brain:
 `git@github.com:glossydev/allodium-agent-brain.git` — update and push when you learn
-something durable. No Suite bucket yet (Adam will create one; until then coordinate
-via the ChapterHub agent or Adam). After significant package/API changes, refresh the
+something durable. Suite work bucket: **Allodium (id 14, GlossyDev client)** —
+`list_open_tasks` via the glossy-suite MCP. After significant package/API changes, refresh the
 project guide via the glossy-deploy MCP action `submit_site_brief`
 (deployment_id=16, include `source_commit`).
 
