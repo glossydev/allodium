@@ -1,6 +1,6 @@
 {
   "name": "@allodium/db",
-  "version": "0.0.1",
+  "version": "0.1.1",
   "description": "Postgres data-layer conventions for Allodium: pooling, transactions, typed query-module patterns on Drizzle + node-postgres.",
   "license": "MIT",
   "type": "module",
@@ -12,7 +12,9 @@
       "import": "./dist/index.js"
     }
   },
-  "files": ["dist"],
+  "files": [
+    "dist"
+  ],
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit"
@@ -26,5 +28,7 @@
     "drizzle-orm": "^0.45.0",
     "pg": "^8.13.0"
   },
-  "engines": { "node": ">=20" }
+  "engines": {
+    "node": ">=20"
+  }
 }

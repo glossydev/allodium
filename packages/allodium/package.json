@@ -1,0 +1,13 @@
+{
+  "name": "allodium",
+  "version": "0.0.1",
+  "description": "Allodial title for your stack — a sovereign, MIT-licensed headless CMS toolkit for Next.js + Postgres. This package will become the Allodium CLI; the toolkit lives in the @allodium/* scope.",
+  "license": "MIT",
+  "type": "module",
+  "main": "./index.js",
+  "files": ["index.js"],
+  "repository": "github:glossydev/allodium",
+  "homepage": "https://github.com/glossydev/allodium",
+  "keywords": ["cms", "headless-cms", "nextjs", "postgres", "drizzle", "directus-alternative", "self-hosted"],
+  "engines": { "node": ">=20" }
+}

@@ -72,3 +72,12 @@ export function money(v: unknown): number {
 export function numeric(v: string | number | null | undefined): number {
   return money(v);
 }
+
+export {
+  toWireRow,
+  toWireRows,
+  pgTimestamptzToIso,
+  pgNaiveToIso,
+  normalizePgTimestamp,
+} from './wire.js';
+export { isUniqueViolation } from './errors.js';
