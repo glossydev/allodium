@@ -47,6 +47,16 @@ via `--workspaces --if-present`. Node >= 20.
 - **Public copy** (README, package descriptions): positive-only — what Allodium does,
   never callouts of other vendors by name. Owner directive.
 
+## GDS registry & agent brain
+
+Registered in the GlossyDevServer registry as external **deployment 16** (registry of
+record only; nothing hosted, no analytics — it's a library). Agent brain:
+`git@github.com:glossydev/allodium-agent-brain.git` — update and push when you learn
+something durable. No Suite bucket yet (Adam will create one; until then coordinate
+via the ChapterHub agent or Adam). After significant package/API changes, refresh the
+project guide via the glossy-deploy MCP action `submit_site_brief`
+(deployment_id=16, include `source_commit`).
+
 ## History
 
 Extracted July 2026 during ChapterHub's Directus exit (its `docs/DIRECTUS_EXIT_PLAN.md`
