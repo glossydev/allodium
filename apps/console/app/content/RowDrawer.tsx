@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { tk } from '@/ui/tokens';
 import { type WireRow, cellText, clip, NullMark, fetchJson, SlideOver, Modal, LoadingState } from '@/ui/primitives';
 import { type ClientCatalog, type ClientColumn, type ClientTable, labelColumn } from './types';
+import FkPeek from './FkPeek';
 
 /** Drawer over a row: view / edit / create, with FK relation picking. */
 
@@ -78,12 +79,14 @@ export default function RowDrawer({
                       <span className="whitespace-pre-wrap break-all font-mono text-zinc-200">{clip(pretty, 5000)}</span>
                     )}
                     {c.fkTable && c.fkColumn && !c.masked && !d.isNull && (
-                      <button
-                        onClick={() => onNavigateFk(c.fkTable!, c.fkColumn!, d.text)}
-                        className={`ml-2 whitespace-nowrap ${tk.link}`}
-                      >
-                        → {c.fkTable}
-                      </button>
+                      <span className="ml-2 whitespace-nowrap">
+                        <FkPeek
+                          refTable={c.fkTable}
+                          refColumn={c.fkColumn}
+                          value={d.text}
+                          onNavigate={() => onNavigateFk(c.fkTable!, c.fkColumn!, d.text)}
+                        />
+                      </span>
                     )}
                   </div>
                 </div>
@@ -225,6 +228,11 @@ function RowForm({
           <span className={`min-w-0 flex-1 truncate rounded border border-zinc-800 bg-zinc-950 px-2 py-1 font-mono text-xs ${f.isNull ? 'text-zinc-600 italic' : 'text-zinc-200'}`}>
             {f.isNull ? 'NULL' : f.text || '—'}
           </span>
+          {/* Peek the currently-selected target — confirming a pick is exactly
+              when you want to see the other row without losing the form. */}
+          {!f.isNull && f.text && (
+            <FkPeek refTable={c.fkTable} refColumn={c.fkColumn} value={f.text} label="peek" onNavigate={() => setPickerFor(c)} />
+          )}
           <button type="button" onClick={() => setPickerFor(c)} className={tk.btn2}>
             Pick…
           </button>

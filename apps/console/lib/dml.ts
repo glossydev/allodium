@@ -30,7 +30,11 @@ function visibleColumns(t: CatalogTable): CatalogColumn[] {
 
 /** SELECT list that never touches masked columns. */
 function selectList(t: CatalogTable): string {
-  const cols = visibleColumns(t);
+  return selectListFor(visibleColumns(t));
+}
+
+/** SELECT list for an explicit column set (already mask-filtered by the caller). */
+function selectListFor(cols: CatalogColumn[]): string {
   if (!cols.length) return 'null as __empty';
   // Timestamps → ISO-ish text at the SQL layer so the wire is JSON-stable
   // (the node-pg Date round trip is where timezone bugs breed — see @allodium/db).
@@ -100,6 +104,71 @@ export interface SelectRowsArgs {
   sort?: string | null;
   dir?: 'asc' | 'desc';
   filters?: Filter[];
+}
+
+/**
+ * Which columns a hover card should show, in priority order.
+ *
+ * Deliberately a HEURISTIC with no configuration: the console has no per-table
+ * config anywhere else, and requiring one here would mean a table is unhelpful
+ * until someone remembers to annotate it. The ordering below reads like what a
+ * human wants to confirm — "is this the right row?" — rather than column order.
+ */
+function peekColumns(t: CatalogTable, refColumn: string): CatalogColumn[] {
+  const visible = visibleColumns(t);
+  const chosen: CatalogColumn[] = [];
+  const take = (c: CatalogColumn | undefined) => {
+    if (c && !chosen.some((x) => x.name === c.name)) chosen.push(c);
+  };
+
+  // 1. The column being referenced — the identity you clicked through.
+  take(visible.find((c) => c.name === refColumn));
+  // 2. The most name-like column: what a person actually recognizes a row by.
+  const NAMEY = ['name', 'title', 'label', 'display_name', 'full_name', 'filename', 'email', 'key', 'slug', 'order_number', 'sku'];
+  for (const n of NAMEY) take(visible.find((c) => c.name === n));
+  // 3. Status-ish columns — enums and booleans carry a lot of meaning per pixel.
+  for (const c of visible) {
+    if (chosen.length >= 6) break;
+    if (c.family === 'enum' || c.family === 'boolean') take(c);
+  }
+  // 4. Fill the rest in declaration order, skipping noise a card can't use:
+  //    long text bodies, json blobs, arrays, and the PK if already covered.
+  for (const c of visible) {
+    if (chosen.length >= 6) break;
+    if (c.family === 'json' || c.family === 'array') continue;
+    if (c.udtName === 'text') continue;
+    take(c);
+  }
+  return chosen.slice(0, 6);
+}
+
+/**
+ * Fetch ONE referenced row for a hover peek, trimmed to peekColumns.
+ * `column` must be the FK's target column (catalog-verified, and masked columns
+ * are refused so a peek can never become a secret oracle).
+ */
+export async function peekRow(table: string, column: string, value: string) {
+  const t = await getTable(table);
+  if (!t) return err('Unknown table');
+  const col = t.columns.find((c) => c.name === column);
+  if (!col) return err(`Unknown column: ${column}`);
+  if (col.masked) return err(`Column is masked: ${column}`);
+
+  const cols = peekColumns(t, column);
+  if (!cols.length) return err('Table has no showable columns');
+
+  const { pool } = getDb();
+  const res = await pool.query(
+    `select ${selectListFor(cols)} from ${qid(t.name)} where ${qid(col.name)}::text = $1 limit 1`,
+    [value]
+  );
+
+  return {
+    ok: true as const,
+    row: (res.rows[0] as Record<string, unknown> | undefined) ?? null,
+    columns: cols.map((c) => ({ name: c.name, type: c.type, family: c.family, isPk: c.isPk })),
+    pk: t.pk,
+  };
 }
 
 export async function selectRows(args: SelectRowsArgs) {

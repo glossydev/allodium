@@ -8,10 +8,20 @@ optimized for developers: find specific things fast AND expose lots of data to s
 
 - **Localhost dev tool, enforced — not assumed.** Port **3180**. No auth yet, so
   "local only" IS the security model and it is enforced in three places:
-  `-H 127.0.0.1` in the dev/start scripts, a `middleware.ts` that 421s any request
+  `-H localhost` in the dev/start scripts, a `middleware.ts` that 421s any request
   whose `Host` is not loopback (closing DNS rebinding, which loopback binding alone
   does not), and a same-origin + content-type gate on every mutation (closing
   drive-by CSRF, which loopback binding also does not).
+
+  **`-H localhost`, not `-H 127.0.0.1` — this is a performance decision, don't
+  "fix" it back.** On Windows `localhost` resolves to `::1` before `127.0.0.1`.
+  Binding IPv4-only meant every request through the *name* `localhost` paid a
+  failed IPv6 connect first: measured **216 ms of pure TCP connect time**, on every
+  request, making the whole console feel sluggish for reasons that had nothing to
+  do with the app. `-H localhost` binds `::1` only — same loopback-only posture
+  (verified: all LAN IPv4 and public IPv6 addresses refuse) — and drops that to
+  ~9 ms. Trade-off: the IPv4 literal `http://127.0.0.1:3180` no longer answers;
+  use `localhost` or `[::1]`. The middleware accepts all three loopback spellings.
   Auth arrives later via `@allodium/auth` factories when the console grows a hosted
   story. **Do not weaken these three without replacing them with real auth** —
   `/api/sql` and `/api/schema/ddl` are a full database surface.
@@ -99,6 +109,15 @@ A silo needing a new shared helper adds it under its own dir and flags it for ho
   finding are both first-class.
 - **Timestamps**: `lib/dml.ts` serializes timestamptz/timestamp/date to ISO text
   in SQL — don't re-parse on the client, just display.
+- **FK peek** (`app/content/FkPeek.tsx` + `/api/content/peek`): hovering a foreign key
+  shows the referenced row. Which columns appear is a server-side HEURISTIC
+  (`peekColumns` in `lib/dml.ts`) — referenced column, then the most name-like column,
+  then enums/booleans, then the rest, skipping long text/json/array. Deliberately no
+  per-table config: the console has none anywhere else, and requiring annotation would
+  leave every new table unhelpful by default. Cheap by construction — one indexed
+  `limit 1` on ~6 columns, a module-level cache keyed `table:column:value`, a 180 ms
+  hover delay, and row-hover prefetch. Masked columns are refused server-side so a peek
+  can't become an oracle.
 - **Fetched rows carry their table.** Store `{table, rows, total}` together and render
   only when it matches the current selection. Keeping rows in a bare `rows` state let
   a table switch paint the previous table's rows under the new table's columns — and a

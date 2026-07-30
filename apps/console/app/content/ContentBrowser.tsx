@@ -24,6 +24,7 @@ import {
   paramToFilter,
 } from './types';
 import RowDrawer, { type DrawerState } from './RowDrawer';
+import FkPeek, { prefetchPeek } from './FkPeek';
 
 /**
  * The Content silo — generic table browser + CRUD over the live catalog.
@@ -318,6 +319,15 @@ export default function ContentBrowser() {
                       <tr
                         key={currentTable.pk ? `${String(row[currentTable.pk])}-${i}` : i}
                         onClick={() => setDrawer({ mode: 'view', row })}
+                        // Warm every FK in the row on row-hover, so the card is
+                        // already populated by the time the pointer reaches the arrow.
+                        onMouseEnter={() => {
+                          for (const c of visibleCols) {
+                            if (!c.fkTable || !c.fkColumn) continue;
+                            const d = cellText(row[c.name]);
+                            if (!d.isNull) prefetchPeek(c.fkTable, c.fkColumn, d.text);
+                          }
+                        }}
                         className={tk.trClickable}
                       >
                         {visibleCols.map((c) => {
@@ -332,16 +342,15 @@ export default function ContentBrowser() {
                                 <span className={c.family === 'number' || c.isPk ? 'font-mono' : ''}>{clip(d.text, 300)}</span>
                               )}
                               {c.fkTable && c.fkColumn && !d.isNull && (
-                                <button
-                                  onClick={(e) => {
-                                    e.stopPropagation();
-                                    navigateFk(c.fkTable!, c.fkColumn!, d.text);
-                                  }}
-                                  title={`→ ${c.fkTable}`}
-                                  className={`ml-1.5 ${tk.link}`}
-                                >
-                                  →
-                                </button>
+                                <span className="ml-1.5">
+                                  <FkPeek
+                                    refTable={c.fkTable}
+                                    refColumn={c.fkColumn}
+                                    value={d.text}
+                                    label="→"
+                                    onNavigate={() => navigateFk(c.fkTable!, c.fkColumn!, d.text)}
+                                  />
+                                </span>
                               )}
                             </td>
                           );
