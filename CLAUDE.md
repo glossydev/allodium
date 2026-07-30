@@ -15,9 +15,17 @@ Agent brain (memories/setup, private): `glossydev/allodium-agent-brain`.
 
 ## Layout
 
-npm-workspaces monorepo, plain TypeScript, ESM-only, NodeNext resolution
-(internal imports need `.js` extensions). `npm run build|typecheck|test` fan out
-via `--workspaces --if-present`. Node >= 20.
+npm-workspaces monorepo (`packages/*` + `apps/*`), plain TypeScript, ESM-only,
+NodeNext resolution (internal imports need `.js` extensions). `npm run build|typecheck|test`
+fan out via `--workspaces --if-present`. Node >= 20.
+
+**`apps/console`** — the developer console (the *build-the-site* lane). `npm run console`
+→ http://localhost:3180. Catalog-driven (reads pg_catalog per request, not a Drizzle
+registry), six silos + an Admin Builder placeholder. Dev harness today; pieces graduate
+into `@allodium/admin` as they stabilize. **Read `apps/console/ARCHITECTURE.md` before
+touching it** — it carries the safety model, silo file ownership, and hard-won
+conventions. Local Postgres: container `allodium-dev-pg` on 5433, db `allodium_dev`,
+seeded by `dev/seed/*.sql` (run 001→004 in order on a fresh database).
 
 | Package | Version | State |
 |---|---|---|
