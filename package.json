@@ -7,12 +7,14 @@
   "author": "Adam Aronoff (https://github.com/glossydev)",
   "repository": "github:glossydev/allodium",
   "workspaces": [
-    "packages/*"
+    "packages/*",
+    "apps/*"
   ],
   "scripts": {
     "build": "npm run build --workspaces --if-present",
     "typecheck": "npm run typecheck --workspaces --if-present",
-    "test": "npm run test --workspaces --if-present"
+    "test": "npm run test --workspaces --if-present",
+    "console": "npm run dev --workspace apps/console"
   },
   "devDependencies": {
     "typescript": "^5.7.0"

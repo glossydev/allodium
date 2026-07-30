@@ -1,8 +1,18 @@
 node_modules/
 dist/
 *.tsbuildinfo
+.next/
+.uploads/
 .env
 .env.*
 !.env.example
 .DS_Store
 .npmrc
+
+# agent brain — its own repo (glossydev/allodium-agent-brain), checked out here
+.brain/
+
+# Claude Code session state: accumulated per-command allowlists with machine- and
+# session-specific absolute paths. Un-ignore settings.json if a curated, shared
+# project config is ever worth committing.
+.claude/
