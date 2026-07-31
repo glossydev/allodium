@@ -76,7 +76,11 @@ export function SlideOver({
   }, [onClose]);
 
   return (
-    <div className={`fixed inset-y-0 right-0 z-40 flex ${width} max-w-full flex-col border-l border-zinc-800 bg-zinc-900 shadow-2xl`}>
+    <div
+      role="dialog"
+      aria-modal="true"
+      className={`fixed inset-y-0 right-0 z-40 flex ${width} max-w-full flex-col border-l border-zinc-800 bg-zinc-900 shadow-2xl`}
+    >
       <div className="flex items-center justify-between border-b border-zinc-800 px-4 py-2.5">
         <h2 className="truncate text-sm font-semibold text-zinc-100">{title}</h2>
         <button
@@ -118,6 +122,8 @@ export function Modal({
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4" onMouseDown={onClose}>
       <div
+        role="dialog"
+        aria-modal="true"
         className={`flex w-full ${width} max-h-[85vh] flex-col rounded-lg border border-zinc-800 bg-zinc-900 shadow-2xl`}
         onMouseDown={(e) => e.stopPropagation()}
       >

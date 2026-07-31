@@ -228,6 +228,173 @@ export async function buildAddForeignKey(spec: {
   };
 }
 
+/* ----------------------------- alter column ----------------------------- */
+
+export async function buildRenameColumn(table: string, column: string, newName: string): Promise<Built> {
+  const t = await getTable(table);
+  if (!t) return err('Unknown table');
+  if (!t.columns.some((c) => c.name === column)) return err(`Unknown column: ${column}`);
+  const name = validateIdentifier(newName);
+  if (!name.ok) return err(name.error);
+  if (t.columns.some((c) => c.name === newName)) return err(`Column already exists: ${newName}`);
+  return { ok: true, sql: `alter table ${qid(t.name)} rename column ${qid(column)} to ${qid(newName)};` };
+}
+
+/**
+ * Change a column's type. The USING clause is always emitted, even when it looks
+ * redundant: it is what actually converts existing rows, and showing it is the
+ * point — the preview should never hide the conversion that is about to run.
+ */
+export async function buildAlterColumnType(table: string, column: string, newType: string): Promise<Built> {
+  const t = await getTable(table);
+  if (!t) return err('Unknown table');
+  const col = t.columns.find((c) => c.name === column);
+  if (!col) return err(`Unknown column: ${column}`);
+  const type = await resolveType(newType);
+  if (!type.ok) return err(type.error);
+  if (type.sql === 'serial') return err('serial is a shorthand for table creation, not a column type — use integer');
+  return {
+    ok: true,
+    sql: `alter table ${qid(t.name)}\n  alter column ${qid(column)} type ${type.sql}\n  using ${qid(column)}::${type.sql};`,
+  };
+}
+
+export async function buildSetNotNull(table: string, column: string, notNull: boolean): Promise<Built> {
+  const t = await getTable(table);
+  if (!t) return err('Unknown table');
+  const col = t.columns.find((c) => c.name === column);
+  if (!col) return err(`Unknown column: ${column}`);
+  return {
+    ok: true,
+    sql: `alter table ${qid(t.name)} alter column ${qid(column)} ${notNull ? 'set' : 'drop'} not null;`,
+  };
+}
+
+export async function buildSetDefault(table: string, column: string, value: string | undefined): Promise<Built> {
+  const t = await getTable(table);
+  if (!t) return err('Unknown table');
+  if (!t.columns.some((c) => c.name === column)) return err(`Unknown column: ${column}`);
+  const def = resolveDefault(value);
+  if (!def.ok) return err(def.error);
+  return {
+    ok: true,
+    sql:
+      def.sql === null
+        ? `alter table ${qid(t.name)} alter column ${qid(column)} drop default;`
+        : `alter table ${qid(t.name)} alter column ${qid(column)} set default ${def.sql};`,
+  };
+}
+
+/**
+ * How many rows would violate a pending SET NOT NULL. Cheap, and it turns a
+ * pg failure into a sentence the UI can show BEFORE the user commits to it.
+ */
+export async function countNulls(table: string, column: string): Promise<number | null> {
+  const t = await getTable(table);
+  if (!t || !t.columns.some((c) => c.name === column)) return null;
+  const res = await getDb().pool.query(`select count(*)::int as n from ${qid(t.name)} where ${qid(column)} is null`);
+  return (res.rows[0] as { n: number }).n;
+}
+
+/* -------------------------------- indexes -------------------------------- */
+
+/** Postgres caps identifiers at 63 bytes; generated names must fit or it errors. */
+const fitIdentifier = (s: string) => (s.length > 63 ? s.slice(0, 63).replace(/_+$/, '') : s);
+
+export async function buildCreateIndex(spec: {
+  table: string;
+  columns: string[];
+  unique?: boolean;
+  name?: string;
+}): Promise<Built> {
+  const t = await getTable(spec.table);
+  if (!t) return err('Unknown table');
+  if (!spec.columns?.length) return err('Pick at least one column');
+  for (const c of spec.columns) {
+    if (!t.columns.some((x) => x.name === c)) return err(`Unknown column: ${c}`);
+  }
+  const dupes = spec.columns.filter((c, i, a) => a.indexOf(c) !== i);
+  if (dupes.length) return err(`Column listed twice: ${dupes[0]}`);
+
+  const name = spec.name?.trim() || fitIdentifier(`${t.name}_${spec.columns.join('_')}_${spec.unique ? 'key' : 'idx'}`);
+  const check = validateIdentifier(name);
+  if (!check.ok) return err(check.error);
+
+  return {
+    ok: true,
+    sql: `create ${spec.unique ? 'unique ' : ''}index ${qid(name)}\n  on ${qid(t.name)} (${spec.columns.map(qid).join(', ')});`,
+  };
+}
+
+export async function buildDropIndex(name: string): Promise<Built> {
+  if (!/^[a-zA-Z_][a-zA-Z0-9_]{0,62}$/.test(name)) return err('Invalid index name');
+  return { ok: true, sql: `drop index ${qid(name)};` };
+}
+
+/* ------------------------------- enum types ------------------------------- */
+
+/** Enum labels are data, not identifiers — quoted as string literals. */
+const qlit = (s: string) => `'${s.replaceAll("'", "''")}'`;
+
+function validateEnumValues(values: unknown): { ok: true; values: string[] } | { ok: false; error: string } {
+  if (!Array.isArray(values)) return { ok: false, error: 'values must be an array' };
+  const out: string[] = [];
+  for (const raw of values) {
+    const v = typeof raw === 'string' ? raw.trim() : '';
+    if (!v) return { ok: false, error: 'Enum values cannot be empty' };
+    if (v.length > 63) return { ok: false, error: `Enum value too long: ${v.slice(0, 20)}…` };
+    if (out.includes(v)) return { ok: false, error: `Duplicate enum value: ${v}` };
+    out.push(v);
+  }
+  if (!out.length) return { ok: false, error: 'An enum needs at least one value' };
+  return { ok: true, values: out };
+}
+
+export async function buildCreateEnum(spec: { name: string; values: unknown }): Promise<Built> {
+  const name = validateIdentifier(spec.name);
+  if (!name.ok) return err(name.error);
+  const cat = await getCatalog();
+  if (cat.enums.has(spec.name)) return err(`Type already exists: ${spec.name}`);
+  if (cat.tables.has(spec.name)) return err(`A table already uses that name: ${spec.name}`);
+  const vals = validateEnumValues(spec.values);
+  if (!vals.ok) return err(vals.error);
+  return {
+    ok: true,
+    sql: `create type ${qid(spec.name)} as enum (${vals.values.map(qlit).join(', ')});`,
+  };
+}
+
+export async function buildAddEnumValue(spec: { type: string; value: string; before?: string }): Promise<Built> {
+  const cat = await getCatalog();
+  const existing = cat.enums.get(spec.type);
+  if (!existing) return err(`Unknown enum type: ${spec.type}`);
+  const vals = validateEnumValues([spec.value]);
+  if (!vals.ok) return err(vals.error);
+  if (existing.includes(vals.values[0])) return err(`Value already exists: ${vals.values[0]}`);
+  // Position matters for ORDER BY on an enum column, so allow inserting before an
+  // existing label rather than only appending.
+  const where = spec.before ? ` before ${qlit(spec.before)}` : '';
+  if (spec.before && !existing.includes(spec.before)) return err(`Unknown value to insert before: ${spec.before}`);
+  return { ok: true, sql: `alter type ${qid(spec.type)} add value ${qlit(vals.values[0])}${where};` };
+}
+
+export async function buildRenameEnumValue(spec: { type: string; from: string; to: string }): Promise<Built> {
+  const cat = await getCatalog();
+  const existing = cat.enums.get(spec.type);
+  if (!existing) return err(`Unknown enum type: ${spec.type}`);
+  if (!existing.includes(spec.from)) return err(`Unknown value: ${spec.from}`);
+  const vals = validateEnumValues([spec.to]);
+  if (!vals.ok) return err(vals.error);
+  if (existing.includes(vals.values[0])) return err(`Value already exists: ${vals.values[0]}`);
+  return { ok: true, sql: `alter type ${qid(spec.type)} rename value ${qlit(spec.from)} to ${qlit(vals.values[0])};` };
+}
+
+export async function buildDropEnum(name: string): Promise<Built> {
+  const cat = await getCatalog();
+  if (!cat.enums.has(name)) return err(`Unknown enum type: ${name}`);
+  return { ok: true, sql: `drop type ${qid(name)};` };
+}
+
 export async function buildDropConstraint(table: string, constraint: string): Promise<Built> {
   const t = await getTable(table);
   if (!t) return err('Unknown table');

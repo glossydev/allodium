@@ -9,6 +9,16 @@ import {
   buildAddForeignKey,
   buildDropConstraint,
   buildCreateJoinTable,
+  buildRenameColumn,
+  buildAlterColumnType,
+  buildSetNotNull,
+  buildSetDefault,
+  buildCreateIndex,
+  buildDropIndex,
+  buildCreateEnum,
+  buildAddEnumValue,
+  buildRenameEnumValue,
+  buildDropEnum,
   executeDdl,
   type ColumnSpec,
 } from '@/lib/ddl';
@@ -53,6 +63,35 @@ async function build(action: string, p: Record<string, unknown>): Promise<Built>
         tableB: String(p.tableB ?? ''),
         name: p.name ? String(p.name) : undefined,
       });
+    case 'renameColumn':
+      return buildRenameColumn(String(p.table ?? ''), String(p.column ?? ''), String(p.newName ?? ''));
+    case 'alterColumnType':
+      return buildAlterColumnType(String(p.table ?? ''), String(p.column ?? ''), String(p.newType ?? ''));
+    case 'setNotNull':
+      return buildSetNotNull(String(p.table ?? ''), String(p.column ?? ''), !!p.notNull);
+    case 'setDefault':
+      return buildSetDefault(String(p.table ?? ''), String(p.column ?? ''), p.value === undefined || p.value === null ? undefined : String(p.value));
+    case 'createIndex':
+      return buildCreateIndex({
+        table: String(p.table ?? ''),
+        columns: Array.isArray(p.columns) ? p.columns.map(String) : [],
+        unique: !!p.unique,
+        name: p.name ? String(p.name) : undefined,
+      });
+    case 'dropIndex':
+      return buildDropIndex(String(p.name ?? ''));
+    case 'createEnum':
+      return buildCreateEnum({ name: String(p.name ?? ''), values: p.values });
+    case 'addEnumValue':
+      return buildAddEnumValue({
+        type: String(p.type ?? ''),
+        value: String(p.value ?? ''),
+        before: p.before ? String(p.before) : undefined,
+      });
+    case 'renameEnumValue':
+      return buildRenameEnumValue({ type: String(p.type ?? ''), from: String(p.from ?? ''), to: String(p.to ?? '') });
+    case 'dropEnum':
+      return buildDropEnum(String(p.name ?? ''));
     default:
       return { ok: false, error: `Unknown action: ${action}` };
   }

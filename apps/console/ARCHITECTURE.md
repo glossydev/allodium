@@ -109,6 +109,23 @@ A silo needing a new shared helper adds it under its own dir and flags it for ho
   finding are both first-class.
 - **Timestamps**: `lib/dml.ts` serializes timestamptz/timestamp/date to ISO text
   in SQL — don't re-parse on the client, just display.
+- **The Schema silo has two surfaces**, toggled in its toolbar: **Tables** (browse +
+  per-table builders) and **Types** (enums). Enums earned their own surface because
+  they are edited nothing like a table and Postgres constrains them oddly: values can
+  be added and renamed but **never removed** (there is no `DROP VALUE`), definition
+  order is the sort order for `ORDER BY` on an enum column, and a type in use by any
+  column cannot be dropped. All three are surfaced in the UI rather than discovered
+  through a failure.
+- **Column edits are four independent ALTERs, not one save.** Rename, type,
+  nullability, and default each get their own preview and their own Apply. A combined
+  save would leave you guessing which part Postgres rejected. The editor reads the
+  column **live** from the refetched catalog rather than a snapshot, and a rename
+  reports its new name upward so the open panel follows the column's new identity.
+- **Warn before Postgres refuses.** `SET NOT NULL` pre-counts violating rows
+  (`/api/schema/nulls`) and says so *while the checkbox is being ticked* — but only
+  once NOT NULL is actually requested, so it's guidance rather than noise. Same
+  spirit as the FK type-mismatch note. The console's job is to tell you it will fail
+  while you can still change your mind.
 - **Foreign keys have THREE entry points**, because the first version had one and it
   was a 15px link nobody found: inline `references` while creating a table (the first
   place anyone looks), a table-level `+ Foreign key` button that asks which column,

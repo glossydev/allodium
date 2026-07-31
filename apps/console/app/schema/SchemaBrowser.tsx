@@ -7,6 +7,10 @@ import { prettyBytes, NullMark, ErrorBox, EmptyState, LoadingState, fetchJson } 
 import type { ClientCatalog, ClientTable } from '../content/types';
 import { CreateTableModal, JoinTableModal, AddColumnModal, ConfirmDdlModal } from './builders';
 import ForeignKeyPanel from './ForeignKeyPanel';
+import ColumnEditor from './ColumnEditor';
+import IndexBuilder from './IndexBuilder';
+import TypesPanel from './TypesPanel';
+import type { ClientColumn } from '../content/types';
 
 /**
  * Schema silo — live truth from the catalog, plus the v1 builder.
@@ -31,6 +35,7 @@ export default function SchemaBrowser() {
   const [tick, setTick] = useState(0);
   const [search, setSearch] = useState('');
   const [selName, setSelName] = useState<string | null>(null);
+  const [view, setView] = useState<'tables' | 'types'>('tables');
 
   // Which builder flow is open.
   const [modal, setModal] = useState<
@@ -38,6 +43,8 @@ export default function SchemaBrowser() {
     | { kind: 'joinTable' }
     | { kind: 'addColumn'; table: string }
     | { kind: 'fk'; table: string; column: string | null }
+    | { kind: 'editColumn'; table: string; columnName: string }
+    | { kind: 'index'; table: string }
     | { kind: 'confirm'; title: string; action: string; params: Record<string, unknown>; danger?: string }
     | null
   >(null);
@@ -72,29 +79,50 @@ export default function SchemaBrowser() {
     <div className="flex min-h-0 flex-1 flex-col">
       {/* Toolbar */}
       <div className={tk.toolbar}>
-        <input
-          type="text"
-          value={search}
-          onChange={(e) => setSearch(e.target.value)}
-          placeholder="Filter tables…"
-          className={`${tk.input} w-44`}
-        />
+        {/* Tables and types are both schema, but they're edited differently enough
+            to deserve their own surface rather than a modal buried in the grid. */}
+        <div className="flex overflow-hidden rounded border border-zinc-700">
+          {(['tables', 'types'] as const).map((v) => (
+            <button
+              key={v}
+              onClick={() => setView(v)}
+              className={`px-2.5 py-1 text-xs ${view === v ? 'bg-zinc-800 text-emerald-300' : 'text-zinc-400 hover:bg-zinc-900'}`}
+            >
+              {v === 'tables' ? 'Tables' : 'Types'}
+            </button>
+          ))}
+        </div>
+        {view === 'tables' && (
+          <input
+            type="text"
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            placeholder="Filter tables…"
+            className={`${tk.input} w-44`}
+          />
+        )}
         <span className={`text-xs ${tk.muted}`}>
-          {data ? `${data.tables.length} tables` : ''}
+          {data && view === 'tables' ? `${data.tables.length} tables` : ''}
           {loading ? (data ? ' · refreshing…' : ' loading…') : ''}
         </span>
         <button onClick={refetch} disabled={loading} className={`${tk.btn2} ml-auto`}>
           Refresh
         </button>
-        <button onClick={() => setModal({ kind: 'joinTable' })} className={tk.btn2}>
-          + Join table
-        </button>
-        <button onClick={() => setModal({ kind: 'createTable' })} className={tk.btn}>
-          + New table
-        </button>
+        {view === 'tables' && (
+          <>
+            <button onClick={() => setModal({ kind: 'joinTable' })} className={tk.btn2}>
+              + Join table
+            </button>
+            <button onClick={() => setModal({ kind: 'createTable' })} className={tk.btn}>
+              + New table
+            </button>
+          </>
+        )}
       </div>
 
-      <div className="flex min-h-0 flex-1">
+      {view === 'types' && data && <TypesPanel enums={data.enums} tables={data.tables} onChanged={refetch} />}
+
+      <div className={`flex min-h-0 flex-1 ${view === 'types' ? 'hidden' : ''}`}>
         {/* Overview grid */}
         <div className="min-w-0 flex-1 overflow-auto">
           {error ? (
@@ -173,6 +201,9 @@ export default function SchemaBrowser() {
                 <button onClick={() => setModal({ kind: 'fk', table: sel.name, column: null })} className={tk.btn2}>
                   + Foreign key
                 </button>
+                <button onClick={() => setModal({ kind: 'index', table: sel.name })} className={tk.btn2}>
+                  + Index
+                </button>
                 <button
                   onClick={() =>
                     setModal({
@@ -207,8 +238,14 @@ export default function SchemaBrowser() {
                       const fk = fkFor(c.name);
                       return (
                         <tr key={c.name} className="border-b border-zinc-800/60 align-top">
-                          <td className="px-1.5 py-1 font-mono text-zinc-200">
-                            {c.name}
+                          <td className="px-1.5 py-1 font-mono">
+                            <button
+                              onClick={() => setModal({ kind: 'editColumn', table: sel.name, columnName: c.name })}
+                              title={`Edit ${c.name} — rename, type, nullability, default`}
+                              className="text-left text-zinc-200 hover:text-emerald-300 hover:underline"
+                            >
+                              {c.name}
+                            </button>
                             {c.masked && <span className="ml-1 italic text-zinc-600">masked</span>}
                           </td>
                           <td className="px-1.5 py-1 font-mono text-zinc-400">{c.type}</td>
@@ -295,12 +332,35 @@ export default function SchemaBrowser() {
                   <div className="text-[11px] text-zinc-600">none</div>
                 ) : (
                   <ul className="space-y-1.5">
-                    {sel.indexes.map((ix) => (
-                      <li key={ix.name}>
-                        <div className="font-mono text-[11px] font-medium text-zinc-300">{ix.name}</div>
-                        <div className="break-all font-mono text-[10px] text-zinc-500">{ix.definition}</div>
-                      </li>
-                    ))}
+                    {sel.indexes.map((ix) => {
+                      // A constraint-backed index (PK/unique) must be dropped via its
+                      // constraint, not DROP INDEX — so don't offer a button that fails.
+                      const isConstraint = ix.name === `${sel.name}_pkey` || /_key$/.test(ix.name);
+                      return (
+                        <li key={ix.name} className="group flex items-start gap-2">
+                          <div className="min-w-0 flex-1">
+                            <div className="font-mono text-[11px] font-medium text-zinc-300">{ix.name}</div>
+                            <div className="break-all font-mono text-[10px] text-zinc-500">{ix.definition}</div>
+                          </div>
+                          {!isConstraint && (
+                            <button
+                              onClick={() =>
+                                setModal({
+                                  kind: 'confirm',
+                                  title: `Drop index ${ix.name}`,
+                                  action: 'dropIndex',
+                                  params: { name: ix.name },
+                                })
+                              }
+                              title={`Drop index ${ix.name}`}
+                              className="shrink-0 text-[10px] text-zinc-600 opacity-0 transition-opacity hover:text-red-400 group-hover:opacity-100"
+                            >
+                              drop
+                            </button>
+                          )}
+                        </li>
+                      );
+                    })}
                   </ul>
                 )}
               </div>
@@ -326,6 +386,34 @@ export default function SchemaBrowser() {
           table={modal.table}
           column={modal.column}
           tables={data.tables}
+          onClose={() => setModal(null)}
+          onDone={() => {
+            setModal(null);
+            refetch();
+          }}
+        />
+      )}
+      {/* The column is looked up LIVE from the refetched catalog rather than passed
+          as a snapshot, so applying one ALTER leaves the other controls showing
+          current truth. A rename changes the identity, so the editor reports the new
+          name back and the modal follows it. */}
+      {modal?.kind === 'editColumn' && data && sel && (() => {
+        const live = sel.columns.find((c) => c.name === modal.columnName);
+        if (!live) return null;
+        return (
+          <ColumnEditor
+            table={sel}
+            column={live}
+            enums={data.enums}
+            onClose={() => setModal(null)}
+            onDone={refetch}
+            onRenamed={(newName) => setModal({ kind: 'editColumn', table: sel.name, columnName: newName })}
+          />
+        );
+      })()}
+      {modal?.kind === 'index' && sel && (
+        <IndexBuilder
+          table={sel}
           onClose={() => setModal(null)}
           onDone={() => {
             setModal(null);

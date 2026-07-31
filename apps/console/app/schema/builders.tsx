@@ -12,7 +12,7 @@ import type { SchemaTable } from './SchemaBrowser';
  * The preview IS the trust mechanism — never hide what will run.
  */
 
-function useDdlPreview(action: string, params: Record<string, unknown>, ready: boolean) {
+export function useDdlPreview(action: string, params: Record<string, unknown>, ready: boolean) {
   const [sql, setSql] = useState<string | null>(null);
   const [buildError, setBuildError] = useState<string | null>(null);
   const [pending, setPending] = useState(false);
@@ -55,7 +55,7 @@ function useDdlPreview(action: string, params: Record<string, unknown>, ready: b
   return { sql, buildError, pending };
 }
 
-function ExecuteFooter({
+export function ExecuteFooter({
   action,
   params,
   previewSql,
