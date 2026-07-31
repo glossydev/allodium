@@ -296,6 +296,35 @@ export async function countNulls(table: string, column: string): Promise<number 
   return (res.rows[0] as { n: number }).n;
 }
 
+/* ------------------------------- comments -------------------------------- */
+
+/**
+ * COMMENT ON — schema-level documentation.
+ *
+ * Worth doing properly rather than storing descriptions in app config: a comment
+ * lives WITH the column, shows up in psql and every other Postgres tool, survives
+ * a dump/restore, and travels with the migration that created the column. The
+ * admin runtime reads it as default help text, so a field is described once
+ * instead of once per screen that shows it.
+ *
+ * The text is DATA, not an identifier — it goes through literal quoting, and an
+ * empty string drops the comment rather than storing "".
+ */
+export async function buildSetColumnComment(table: string, column: string, comment: string | null): Promise<Built> {
+  const t = await getTable(table);
+  if (!t) return err('Unknown table');
+  if (!t.columns.some((c) => c.name === column)) return err(`Unknown column: ${column}`);
+  const text = comment?.trim() ? qlit(comment.trim()) : 'null';
+  return { ok: true, sql: `comment on column ${qid(t.name)}.${qid(column)} is ${text};` };
+}
+
+export async function buildSetTableComment(table: string, comment: string | null): Promise<Built> {
+  const t = await getTable(table);
+  if (!t) return err('Unknown table');
+  const text = comment?.trim() ? qlit(comment.trim()) : 'null';
+  return { ok: true, sql: `comment on table ${qid(t.name)} is ${text};` };
+}
+
 /* -------------------------------- indexes -------------------------------- */
 
 /** Postgres caps identifiers at 63 bytes; generated names must fit or it errors. */

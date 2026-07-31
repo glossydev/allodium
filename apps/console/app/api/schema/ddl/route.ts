@@ -19,6 +19,8 @@ import {
   buildAddEnumValue,
   buildRenameEnumValue,
   buildDropEnum,
+  buildSetColumnComment,
+  buildSetTableComment,
   executeDdl,
   type ColumnSpec,
 } from '@/lib/ddl';
@@ -92,6 +94,10 @@ async function build(action: string, p: Record<string, unknown>): Promise<Built>
       return buildRenameEnumValue({ type: String(p.type ?? ''), from: String(p.from ?? ''), to: String(p.to ?? '') });
     case 'dropEnum':
       return buildDropEnum(String(p.name ?? ''));
+    case 'setColumnComment':
+      return buildSetColumnComment(String(p.table ?? ''), String(p.column ?? ''), p.comment == null ? null : String(p.comment));
+    case 'setTableComment':
+      return buildSetTableComment(String(p.table ?? ''), p.comment == null ? null : String(p.comment));
     default:
       return { ok: false, error: `Unknown action: ${action}` };
   }

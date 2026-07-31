@@ -227,7 +227,9 @@ export function createViewResolver(db: Queryable, opts: { schema?: string; ttlMs
     return {
       table: def.table,
       title: def.title ?? humanize(def.table),
-      description: def.description ?? null,
+      // Same idea as column comments becoming help text: describe the table once,
+      // in the schema, and every view built on it inherits that description.
+      description: def.description ?? meta.comment ?? null,
       primaryKey: pk,
       display: def.display,
       fields,

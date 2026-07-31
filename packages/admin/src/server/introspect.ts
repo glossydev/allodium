@@ -32,6 +32,8 @@ export interface ColumnMeta {
 
 export interface TableMeta {
   name: string;
+  /** COMMENT ON TABLE — the default description for a view built on this table. */
+  comment: string | null;
   columns: ColumnMeta[];
   primaryKey: string | null;
   primaryKeyColumns: string[];
@@ -138,7 +140,7 @@ export function createIntrospector(db: Queryable, opts: { schema?: string; ttlMs
       const hit = tableCache.get(name);
       if (hit && Date.now() - hit.at < ttl) return hit.value;
 
-      const [colsRes, pkRes, fkRes, enums] = await Promise.all([
+      const [colsRes, pkRes, fkRes, enums, tblRes] = await Promise.all([
         db.query(
           `select c.column_name, c.udt_name, c.data_type, c.is_nullable, c.column_default,
                   c.character_maximum_length, c.numeric_precision, c.numeric_scale,
@@ -173,6 +175,12 @@ export function createIntrospector(db: Queryable, opts: { schema?: string; ttlMs
           [schema, name]
         ),
         loadEnums(),
+        db.query(
+          `select obj_description(c.oid, 'pg_class') as comment
+             from pg_class c join pg_namespace n on n.oid = c.relnamespace
+            where n.nspname = $1 and c.relname = $2`,
+          [schema, name]
+        ),
       ]);
 
       const raw = colsRes.rows as RawColumn[];
@@ -205,6 +213,7 @@ export function createIntrospector(db: Queryable, opts: { schema?: string; ttlMs
 
       const meta: TableMeta = {
         name,
+        comment: (tblRes.rows[0] as { comment: string | null } | undefined)?.comment ?? null,
         columns,
         primaryKey: pkCols.length === 1 ? pkCols[0] : null,
         primaryKeyColumns: pkCols,

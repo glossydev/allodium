@@ -39,6 +39,7 @@ export default function ColumnEditor({
   const [newType, setNewType] = useState(column.type);
   const [notNull, setNotNull] = useState(!column.nullable);
   const [defaultValue, setDefaultValue] = useState(column.default ?? '');
+  const [comment, setComment] = useState(column.comment ?? '');
   const [nulls, setNulls] = useState<number | null>(null);
 
   // Reset when the editor is pointed at a different column.
@@ -47,7 +48,8 @@ export default function ColumnEditor({
     setNewType(column.type);
     setNotNull(!column.nullable);
     setDefaultValue(column.default ?? '');
-  }, [column.name, column.type, column.nullable, column.default]);
+    setComment(column.comment ?? '');
+  }, [column.name, column.type, column.nullable, column.default, column.comment]);
 
   // Pre-check for SET NOT NULL, so the warning arrives before the failure does.
   useEffect(() => {
@@ -143,6 +145,25 @@ export default function ColumnEditor({
             NOT NULL
             {nulls !== null && <span className={tk.faint}>({nulls} null now)</span>}
           </label>
+        </Operation>
+
+        {/* Placed above Default because it is the field people will actually reach
+            for: it is where an admin screen's help text comes from. */}
+        <Operation
+          label="Description"
+          action="setColumnComment"
+          params={{ table: table.name, column: column.name, comment: comment.trim() || null }}
+          ready={comment.trim() !== (column.comment ?? '')}
+          onDone={onDone}
+          note="Stored as a Postgres COMMENT — it lives with the column, shows up in psql, and becomes the default help text on any admin screen showing this field."
+        >
+          <textarea
+            value={comment}
+            onChange={(e) => setComment(e.target.value)}
+            rows={2}
+            placeholder="What is this column for, in a sentence?"
+            className={`${tk.input} w-full resize-y`}
+          />
         </Operation>
 
         <Operation

@@ -34,10 +34,18 @@ export interface CatalogColumn {
   /** FK target, when this column references another table. */
   fkTable?: string;
   fkColumn?: string;
+  /**
+   * Postgres COMMENT ON COLUMN. Schema-level documentation: it lives with the
+   * column, is visible in psql and any other tool, and the admin runtime uses it
+   * as default help text so a description is written once, not per screen.
+   */
+  comment: string | null;
 }
 
 export interface CatalogTable {
   name: string;
+  /** COMMENT ON TABLE — what this table is for, in the schema itself. */
+  comment: string | null;
   /** pg_class oid — matched against result fields' tableID for masking in the SQL silo. */
   oid?: number;
   columns: CatalogColumn[];
@@ -68,6 +76,7 @@ interface ColumnRow {
   is_nullable: 'YES' | 'NO';
   column_default: string | null;
   attnum: number;
+  comment: string | null;
 }
 
 function displayType(c: ColumnRow): string {
@@ -122,6 +131,7 @@ async function loadCatalog(): Promise<Catalog> {
     db.execute(sql`
       select c.relname as name,
              c.oid::int as oid,
+             obj_description(c.oid, 'pg_class') as comment,
              pg_total_relation_size(c.oid)::float8 as size_bytes,
              pg_size_pretty(pg_total_relation_size(c.oid)) as size_pretty
       from pg_class c
@@ -132,7 +142,8 @@ async function loadCatalog(): Promise<Catalog> {
       select c.table_name, c.column_name, c.data_type, c.udt_name,
              c.character_maximum_length, c.numeric_precision, c.numeric_scale,
              c.is_nullable, c.column_default,
-             a.attnum::int as attnum
+             a.attnum::int as attnum,
+             col_description(pc.oid, a.attnum) as comment
       from information_schema.columns c
       join pg_class pc on pc.relname = c.table_name
       join pg_namespace pn on pn.oid = pc.relnamespace and pn.nspname = 'public'
@@ -217,7 +228,7 @@ async function loadCatalog(): Promise<Catalog> {
   }
 
   const tables = new Map<string, CatalogTable>();
-  for (const t of tablesRes.rows as unknown as Array<{ name: string; oid: number; size_bytes: number; size_pretty: string }>) {
+  for (const t of tablesRes.rows as unknown as Array<{ name: string; oid: number; comment: string | null; size_bytes: number; size_pretty: string }>) {
     const pkCols = pks.get(t.name) ?? [];
     const columns: CatalogColumn[] = (columnsByTable.get(t.name) ?? []).map((c) => {
       const isEnum = c.data_type === 'USER-DEFINED' && enums.has(c.udt_name);
@@ -225,6 +236,7 @@ async function loadCatalog(): Promise<Catalog> {
       return {
         name: c.column_name,
         attnum: c.attnum,
+        comment: c.comment,
         type: displayType(c),
         udtName: c.udt_name,
         family: familyOf(c, isEnum),
@@ -239,6 +251,7 @@ async function loadCatalog(): Promise<Catalog> {
     tables.set(t.name, {
       name: t.name,
       columns,
+      comment: t.comment,
       pk: pkCols.length === 1 ? pkCols[0] : null,
       pkColumns: pkCols,
       foreignKeysOut: fkOut.get(t.name) ?? [],
@@ -313,6 +326,7 @@ export async function catalogForClient() {
   return {
     tables: [...cat.tables.values()].map((t) => ({
       name: t.name,
+      comment: t.comment,
       pk: t.pk,
       pkColumns: t.pkColumns,
       columns: t.columns.map(({ attnum: _a, ...c }) => (c.masked ? { ...c, default: null, enumValues: undefined } : c)),

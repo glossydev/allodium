@@ -12,10 +12,14 @@ export interface ClientColumn {
   enumValues?: string[];
   fkTable?: string;
   fkColumn?: string;
+  /** COMMENT ON COLUMN — schema-level documentation, and the admin runtime's default help text. */
+  comment: string | null;
 }
 
 export interface ClientTable {
   name: string;
+  /** COMMENT ON TABLE — what this table is for. */
+  comment: string | null;
   pk: string | null;
   pkColumns: string[];
   columns: ClientColumn[];

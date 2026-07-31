@@ -109,6 +109,19 @@ A silo needing a new shared helper adds it under its own dir and flags it for ho
   finding are both first-class.
 - **Timestamps**: `lib/dml.ts` serializes timestamptz/timestamp/date to ISO text
   in SQL — don't re-parse on the client, just display.
+- **Editing `packages/*` needs a rebuild AND a console restart.** The console imports
+  `@allodium/admin` through its `exports` map, which points at `dist/` — so a source
+  change is invisible until `npm run build` in the package, and Next's dev server
+  caches the resolved module, so it also needs restarting. Symptom when you forget:
+  the API returns a shape from the *previous* build (a field you just added is
+  missing) while `dist/` on disk clearly contains it. Check `dist/` before
+  disbelieving your own code.
+- **Descriptions live in Postgres, not in app config.** `COMMENT ON COLUMN` is the
+  source of a field's help text and `COMMENT ON TABLE` the source of a view's
+  description, both editable in the Schema silo. A comment travels with the column:
+  visible in psql and every other tool, survives dump/restore, moves with the
+  migration that created it. A view definition may override either, but nothing has
+  to restate them — describe a field once and every screen showing it inherits that.
 - **The Schema silo has two surfaces**, toggled in its toolbar: **Tables** (browse +
   per-table builders) and **Types** (enums). Enums earned their own surface because
   they are edited nothing like a table and Postgres constrains them oddly: values can

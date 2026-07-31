@@ -10,6 +10,7 @@ import ForeignKeyPanel from './ForeignKeyPanel';
 import ColumnEditor from './ColumnEditor';
 import IndexBuilder from './IndexBuilder';
 import TypesPanel from './TypesPanel';
+import TableDescription from './TableDescription';
 import type { ClientColumn } from '../content/types';
 
 /**
@@ -188,6 +189,8 @@ export default function SchemaBrowser() {
             </div>
 
             <div className="flex-1 overflow-y-auto">
+              <TableDescription table={sel} onDone={refetch} />
+
               {/* Table actions */}
               <div className="flex flex-wrap items-center gap-1.5 border-b border-zinc-800 px-4 py-2">
                 <Link href={`/content?table=${sel.name}`} className={`${tk.btn2} no-underline`}>
@@ -241,12 +244,17 @@ export default function SchemaBrowser() {
                           <td className="px-1.5 py-1 font-mono">
                             <button
                               onClick={() => setModal({ kind: 'editColumn', table: sel.name, columnName: c.name })}
-                              title={`Edit ${c.name} — rename, type, nullability, default`}
+                              title={`Edit ${c.name} — rename, type, nullability, default, description`}
                               className="text-left text-zinc-200 hover:text-emerald-300 hover:underline"
                             >
                               {c.name}
                             </button>
                             {c.masked && <span className="ml-1 italic text-zinc-600">masked</span>}
+                            {/* The description is schema documentation; showing it while
+                                scanning is most of its value. */}
+                            {c.comment && (
+                              <div className="mt-0.5 max-w-[13rem] font-sans text-[10px] leading-snug text-zinc-500">{c.comment}</div>
+                            )}
                           </td>
                           <td className="px-1.5 py-1 font-mono text-zinc-400">{c.type}</td>
                           <td className="px-1.5 py-1">{c.nullable ? 'Y' : 'N'}</td>
