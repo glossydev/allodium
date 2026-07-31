@@ -10,6 +10,18 @@
     ".": {
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
+    },
+    "./view": {
+      "types": "./dist/view.d.ts",
+      "import": "./dist/view.js"
+    },
+    "./server": {
+      "types": "./dist/server/index.d.ts",
+      "import": "./dist/server/index.js"
+    },
+    "./react": {
+      "types": "./dist/react/index.d.ts",
+      "import": "./dist/react/index.js"
     }
   },
   "files": [
@@ -23,9 +35,20 @@
     "node": ">=20"
   },
   "peerDependencies": {
-    "drizzle-orm": ">=0.38.0"
+    "drizzle-orm": ">=0.38.0",
+    "react": ">=18"
+  },
+  "peerDependenciesMeta": {
+    "drizzle-orm": {
+      "optional": true
+    },
+    "react": {
+      "optional": true
+    }
   },
   "devDependencies": {
-    "drizzle-orm": "^0.45.0"
+    "@types/react": "^19.0.0",
+    "drizzle-orm": "^0.45.0",
+    "react": "^19.1.0"
   }
 }

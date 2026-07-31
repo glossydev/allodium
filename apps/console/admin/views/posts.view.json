@@ -1,0 +1,75 @@
+{
+  "table": "posts",
+  "title": "Blog posts",
+  "description": "Everything published on the site. Marketing owns this screen.",
+  "display": "title",
+  "fields": [
+    {
+      "column": "title",
+      "label": "Headline",
+      "help": "Shown in search results and on the post itself.",
+      "widget": "text"
+    },
+    {
+      "column": "slug",
+      "label": "URL slug",
+      "help": "The address this post lives at. Changing it breaks existing links."
+    },
+    {
+      "column": "status",
+      "label": "Status",
+      "help": "Drafts are invisible on the public site.",
+      "widget": "radio",
+      "options": [
+        { "value": "draft", "label": "Draft" },
+        { "value": "published", "label": "Published" },
+        { "value": "archived", "label": "Archived" }
+      ]
+    },
+    {
+      "kind": "relation",
+      "column": "author_id",
+      "label": "Author",
+      "relation": {
+        "table": "authors",
+        "value": "id",
+        "display": "name"
+      },
+      "widget": "select"
+    },
+    {
+      "kind": "m2m",
+      "name": "tags",
+      "label": "Tags",
+      "help": "Used for related-post suggestions.",
+      "through": "post_tags",
+      "near": "post_id",
+      "far": "tag_id",
+      "farTable": "tags",
+      "display": "label",
+      "widget": "checkboxes"
+    },
+    {
+      "column": "body",
+      "label": "Body",
+      "widget": "textarea",
+      "in": ["form"]
+    },
+    {
+      "column": "views",
+      "label": "Views",
+      "readOnly": true
+    },
+    {
+      "column": "published_at",
+      "label": "Published",
+      "widget": "datetime"
+    }
+  ],
+  "list": {
+    "columns": ["title", "status", "author_id", "views", "published_at"],
+    "pageSize": 10,
+    "sort": { "column": "id", "direction": "desc" },
+    "searchColumns": ["title", "slug"]
+  }
+}
