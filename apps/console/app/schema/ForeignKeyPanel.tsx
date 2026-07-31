@@ -22,17 +22,19 @@ const ON_DELETE: { value: string; label: string; hint: string }[] = [
 
 export default function ForeignKeyPanel({
   table,
-  column,
+  column: initialColumn,
   tables,
   onClose,
   onDone,
 }: {
   table: string;
-  column: string;
+  /** Null when opened from the table-level button — the panel then asks which column. */
+  column: string | null;
   tables: SchemaTable[];
   onClose: () => void;
   onDone: () => void;
 }) {
+  const [column, setColumn] = useState<string | null>(initialColumn);
   const [search, setSearch] = useState('');
   const [refTable, setRefTable] = useState<string | null>(null);
   const [refColumn, setRefColumn] = useState<string | null>(null);
@@ -43,6 +45,11 @@ export default function ForeignKeyPanel({
   const [running, setRunning] = useState(false);
 
   const sourceCol = tables.find((t) => t.name === table)?.columns.find((c) => c.name === column);
+  /** Columns on this table that already have an FK — not offered as sources. */
+  const sourceTableFks = useMemo(
+    () => new Set((tables.find((t) => t.name === table)?.foreignKeysOut ?? []).map((f) => f.column)),
+    [tables, table]
+  );
   const target = useMemo(() => tables.find((t) => t.name === refTable) ?? null, [tables, refTable]);
   const tableList = tables.filter((t) => t.name.toLowerCase().includes(search.trim().toLowerCase()));
 
@@ -71,7 +78,7 @@ export default function ForeignKeyPanel({
   // Live preview whenever the choice is complete. Clear first so Execute is never
   // armed against a statement from a previous selection.
   useEffect(() => {
-    if (!refTable || !refColumn) {
+    if (!column || !refTable || !refColumn) {
       setSql(null);
       return;
     }
@@ -105,11 +112,7 @@ export default function ForeignKeyPanel({
 
   return (
     <SlideOver
-      title={
-        <span className="font-mono">
-          fk: {table}.{column} →
-        </span>
-      }
+      title={<span className="font-mono">fk: {table}.{column ?? '…'} →</span>}
       onClose={onClose}
       width="w-[480px]"
       footer={
@@ -124,6 +127,38 @@ export default function ForeignKeyPanel({
       }
     >
       <div className="space-y-4 p-4">
+        {/* Step 0 — only when opened from the table-level button. Columns already
+            carrying an FK are excluded; a PK is a legal source but almost never
+            what someone means, so it's offered last with a note. */}
+        {!initialColumn && (
+          <div>
+            <div className="mb-1 text-[10px] font-semibold uppercase tracking-wide text-zinc-500">
+              1 · which column becomes the foreign key
+            </div>
+            <select
+              autoFocus
+              value={column ?? ''}
+              onChange={(e) => setColumn(e.target.value || null)}
+              className={`${tk.select} w-full font-mono`}
+            >
+              <option value="">— choose a column —</option>
+              {(tables.find((t) => t.name === table)?.columns ?? [])
+                .filter((c) => !c.masked && !sourceTableFks.has(c.name))
+                .map((c) => (
+                  <option key={c.name} value={c.name}>
+                    {c.name} · {c.type}
+                    {c.isPk ? ' (primary key)' : ''}
+                  </option>
+                ))}
+            </select>
+            {sourceTableFks.size > 0 && (
+              <p className={`mt-1 text-[10px] ${tk.faint}`}>
+                Already a foreign key: {[...sourceTableFks].join(', ')}
+              </p>
+            )}
+          </div>
+        )}
+
         {sourceCol && (
           <div className={`text-[11px] ${tk.muted}`}>
             source column: <span className="font-mono text-zinc-300">{column}</span>{' '}
@@ -133,7 +168,7 @@ export default function ForeignKeyPanel({
         )}
 
         {/* Step 1: table */}
-        <div>
+        <div className={column ? '' : 'pointer-events-none opacity-40'}>
           <div className="mb-1 text-[10px] font-semibold uppercase tracking-wide text-zinc-500">1 · referenced table</div>
           <input
             autoFocus

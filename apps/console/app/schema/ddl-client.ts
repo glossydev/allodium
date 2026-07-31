@@ -10,6 +10,34 @@ export interface DdlColumnSpec {
   nullable: boolean;
   default?: string;
   pk?: boolean;
+  references?: { table: string; column: string; onDelete?: string };
+}
+
+export const ON_DELETE_OPTIONS = [
+  { value: 'no action', label: 'no action' },
+  { value: 'restrict', label: 'restrict' },
+  { value: 'cascade', label: 'cascade' },
+  { value: 'set null', label: 'set null' },
+];
+
+/**
+ * Every column an FK may legally point at: primary keys and single-column unique
+ * indexes, grouped by table. Postgres requires the target be uniquely constrained,
+ * so offering anything else would just produce a rejected statement.
+ */
+export function fkTargets(tables: { name: string; pk: string | null; columns: { name: string; type: string; isPk: boolean }[]; indexes: { name: string; definition: string }[] }[]) {
+  return tables
+    .map((t) => {
+      const unique = new Set<string>();
+      for (const ix of t.indexes) {
+        if (!/create unique index/i.test(ix.definition)) continue;
+        const m = /\(([^)]+)\)/.exec(ix.definition);
+        if (m && !m[1].includes(',')) unique.add(m[1].trim().replaceAll('"', ''));
+      }
+      const cols = t.columns.filter((c) => c.isPk || unique.has(c.name));
+      return { table: t.name, columns: cols.map((c) => ({ name: c.name, type: c.type, isPk: c.isPk })) };
+    })
+    .filter((t) => t.columns.length > 0);
 }
 
 export async function previewDdl(
@@ -44,9 +72,18 @@ export async function executeDdlAction(
   return { ok: true, sql: r.data.sql };
 }
 
-/** The type options the builder offers (server enforces the same allowlist). */
+/**
+ * The type options the builder offers (server enforces the same allowlist).
+ *
+ * serial and uuid are first-class TYPES rather than a separate "preset" control:
+ * a per-row preset dropdown was one more thing to understand on every column, and
+ * the only thing it really encoded was "this is an auto-generated key" — which is
+ * a property of the type.
+ */
 export function typeOptions(enums: Record<string, string[]>): { value: string; label: string }[] {
   return [
+    { value: 'serial', label: 'serial (auto-increment)' },
+    { value: 'uuid', label: 'uuid' },
     { value: 'text', label: 'text' },
     { value: 'varchar(255)', label: 'varchar(255)' },
     { value: 'integer', label: 'integer' },
@@ -55,7 +92,6 @@ export function typeOptions(enums: Record<string, string[]>): { value: string; l
     { value: 'numeric(10, 2)', label: 'numeric(10, 2)' },
     { value: 'timestamptz', label: 'timestamptz' },
     { value: 'date', label: 'date' },
-    { value: 'uuid', label: 'uuid' },
     { value: 'jsonb', label: 'jsonb' },
     { value: 'text[]', label: 'text[] (array)' },
     ...Object.keys(enums).map((e) => ({ value: e, label: `${e} (enum)` })),

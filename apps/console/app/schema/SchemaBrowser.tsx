@@ -37,7 +37,7 @@ export default function SchemaBrowser() {
     | { kind: 'createTable' }
     | { kind: 'joinTable' }
     | { kind: 'addColumn'; table: string }
-    | { kind: 'fk'; table: string; column: string }
+    | { kind: 'fk'; table: string; column: string | null }
     | { kind: 'confirm'; title: string; action: string; params: Record<string, unknown>; danger?: string }
     | null
   >(null);
@@ -168,6 +168,11 @@ export default function SchemaBrowser() {
                 <button onClick={() => setModal({ kind: 'addColumn', table: sel.name })} className={tk.btn2}>
                   + Column
                 </button>
+                {/* A table-level entry point: the per-column +fk was a 15px link
+                    nobody found, and it only existed once a column already did. */}
+                <button onClick={() => setModal({ kind: 'fk', table: sel.name, column: null })} className={tk.btn2}>
+                  + Foreign key
+                </button>
                 <button
                   onClick={() =>
                     setModal({
@@ -190,7 +195,7 @@ export default function SchemaBrowser() {
                 <table className="w-full border-collapse text-[11px]">
                   <thead>
                     <tr>
-                      {['name', 'type', 'null', 'default', '', ''].map((h, i) => (
+                      {['name', 'type', 'null', 'default', '', '', ''].map((h, i) => (
                         <th key={i} className="whitespace-nowrap border-b border-zinc-800 px-1.5 py-1 text-left font-medium text-zinc-500">
                           {h}
                         </th>
@@ -223,16 +228,21 @@ export default function SchemaBrowser() {
                               </button>
                             )}
                           </td>
+                          {/* Two separate cells with a gap: a 15px "+fk" link sat
+                              directly beside the destructive drop, which is a bad
+                              place to miss by one pixel. */}
                           <td className="whitespace-nowrap px-1.5 py-1 text-right">
                             {!fk && !c.isPk && (
                               <button
                                 onClick={() => setModal({ kind: 'fk', table: sel.name, column: c.name })}
-                                title="Make foreign key"
-                                className={`text-[10px] ${tk.link}`}
+                                title={`Make ${c.name} a foreign key`}
+                                className="rounded border border-zinc-700 px-1.5 py-0.5 text-[10px] text-zinc-300 hover:border-emerald-600 hover:text-emerald-300"
                               >
-                                +fk
+                                + fk
                               </button>
                             )}
+                          </td>
+                          <td className="whitespace-nowrap py-1 pl-3 pr-1.5 text-right">
                             <button
                               onClick={() =>
                                 setModal({
@@ -246,8 +256,8 @@ export default function SchemaBrowser() {
                                   danger: c.name,
                                 })
                               }
-                              title="Drop column"
-                              className="ml-1.5 text-[10px] text-zinc-600 hover:text-red-400"
+                              title={`Drop column ${c.name}`}
+                              className="text-[11px] text-zinc-600 hover:text-red-400"
                             >
                               ✕
                             </button>
@@ -303,7 +313,7 @@ export default function SchemaBrowser() {
 
       {/* Builder flows */}
       {modal?.kind === 'createTable' && data && (
-        <CreateTableModal enums={data.enums} onClose={() => setModal(null)} onDone={() => { setModal(null); refetch(); }} />
+        <CreateTableModal enums={data.enums} tables={data.tables} onClose={() => setModal(null)} onDone={() => { setModal(null); refetch(); }} />
       )}
       {modal?.kind === 'joinTable' && data && (
         <JoinTableModal tables={data.tables} onClose={() => setModal(null)} onDone={() => { setModal(null); refetch(); }} />

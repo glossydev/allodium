@@ -98,6 +98,23 @@ export interface ColumnSpec {
   nullable: boolean;
   default?: string;
   pk?: boolean;
+  /** Inline FK, so relationships can be declared while creating the table. */
+  references?: { table: string; column: string; onDelete?: string };
+}
+
+/** Validate an inline REFERENCES clause against the live catalog. */
+async function referencesSql(
+  ref: NonNullable<ColumnSpec['references']>
+): Promise<{ ok: true; sql: string } | { ok: false; error: string }> {
+  const target = await getTable(ref.table);
+  if (!target) return { ok: false, error: `unknown referenced table: ${ref.table}` };
+  if (!target.columns.some((c) => c.name === ref.column)) {
+    return { ok: false, error: `unknown referenced column: ${ref.table}.${ref.column}` };
+  }
+  const onDelete = (ref.onDelete ?? 'no action').toLowerCase();
+  if (!ON_DELETE.has(onDelete)) return { ok: false, error: `unknown on-delete behavior: ${ref.onDelete}` };
+  const clause = ` references ${qid(target.name)} (${qid(ref.column)})`;
+  return { ok: true, sql: onDelete === 'no action' ? clause : `${clause} on delete ${onDelete}` };
 }
 
 async function columnSql(c: ColumnSpec): Promise<{ ok: true; sql: string } | { ok: false; error: string }> {
@@ -118,6 +135,11 @@ async function columnSql(c: ColumnSpec): Promise<{ ok: true; sql: string } | { o
   // serial implies not null; otherwise honor the checkbox.
   if (type.sql !== 'serial' && !c.nullable) sql += ' not null';
   if (def.sql !== null) sql += ` default ${def.sql}`;
+  if (c.references) {
+    const ref = await referencesSql(c.references);
+    if (!ref.ok) return ref;
+    sql += ref.sql;
+  }
   return { ok: true, sql };
 }
 

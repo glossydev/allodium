@@ -1,9 +1,9 @@
 'use client';
 
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { tk } from '@/ui/tokens';
 import { Modal, SqlPreview } from '@/ui/primitives';
-import { previewDdl, executeDdlAction, typeOptions, type DdlColumnSpec } from './ddl-client';
+import { previewDdl, executeDdlAction, typeOptions, fkTargets, ON_DELETE_OPTIONS, type DdlColumnSpec } from './ddl-client';
 import type { SchemaTable } from './SchemaBrowser';
 
 /**
@@ -102,50 +102,63 @@ function ExecuteFooter({
 
 /* ------------------------------ Create table ------------------------------ */
 
-interface ColRow extends DdlColumnSpec {
-  preset?: 'serial' | 'uuid' | '';
-}
+type ColRow = DdlColumnSpec;
 
-const emptyCol = (): ColRow => ({ name: '', type: 'text', nullable: true, default: '', pk: false, preset: '' });
+const emptyCol = (): ColRow => ({ name: '', type: 'text', nullable: true, default: '', pk: false });
+
+/** Encode a reference as one select value so the row stays a single control. */
+const refValue = (r: ColRow['references']) => (r ? `${r.table}.${r.column}` : '');
 
 export function CreateTableModal({
   enums,
+  tables,
   onClose,
   onDone,
 }: {
   enums: Record<string, string[]>;
+  tables: SchemaTable[];
   onClose: () => void;
   onDone: () => void;
 }) {
   const [name, setName] = useState('');
   const [cols, setCols] = useState<ColRow[]>([
-    { name: 'id', type: 'serial', nullable: false, default: '', pk: true, preset: 'serial' },
+    { name: 'id', type: 'serial', nullable: false, default: '', pk: true },
     emptyCol(),
   ]);
+
+  const targets = useMemo(() => fkTargets(tables), [tables]);
 
   const setCol = (i: number, patch: Partial<ColRow>) =>
     setCols((prev) => prev.map((c, idx) => (idx === i ? { ...c, ...patch } : c)));
 
-  const applyPreset = (i: number, preset: ColRow['preset']) => {
-    if (preset === 'serial') setCol(i, { preset, type: 'serial', nullable: false, default: '', pk: true });
-    else if (preset === 'uuid') setCol(i, { preset, type: 'uuid', nullable: false, default: 'gen_random_uuid()', pk: true });
-    // Clearing the preset must also drop the type it forced — otherwise the select
-    // loses its `serial` option and displays `text` while the SQL still said serial.
-    else setCol(i, { preset, type: cols[i]?.type === 'serial' ? 'integer' : cols[i]?.type });
+  /** Choosing a reference also matches the column's type to its target. */
+  const setRef = (i: number, value: string) => {
+    if (!value) {
+      setCol(i, { references: undefined });
+      return;
+    }
+    const [table, column] = value.split('.');
+    const target = targets.find((t) => t.table === table)?.columns.find((c) => c.name === column);
+    // serial columns reference as integer; otherwise mirror the target's type so pg
+    // doesn't reject the constraint for an incompatible type.
+    const type = target ? (target.type === 'serial' ? 'integer' : target.type) : undefined;
+    setCol(i, { references: { table, column, onDelete: 'no action' }, ...(type ? { type } : {}) });
   };
 
   const specCols = cols
     .filter((c) => c.name.trim())
-    .map(({ preset: _p, ...c }) => ({ ...c, default: c.default?.trim() ? c.default.trim() : undefined }));
+    .map((c) => ({ ...c, default: c.default?.trim() ? c.default.trim() : undefined }));
   const ready = name.trim().length > 0 && specCols.length > 0;
   const params = { name: name.trim(), columns: specCols };
   const { sql, buildError } = useDdlPreview('createTable', params, ready);
+
+  const GRID = 'grid grid-cols-[1.1fr_1fr_1.3fr_110px_1fr_34px_34px_24px] items-center gap-1.5';
 
   return (
     <Modal
       title="New table"
       onClose={onClose}
-      width="max-w-3xl"
+      width="max-w-5xl"
       footer={<ExecuteFooter action="createTable" params={params} previewSql={sql} onDone={onDone} onClose={onClose} label="Create table" />}
     >
       <div className="space-y-3">
@@ -161,51 +174,88 @@ export function CreateTableModal({
         </div>
 
         <div className="space-y-1.5">
-          <div className="grid grid-cols-[1fr_1fr_90px_1fr_36px_36px_24px] gap-1.5 text-[10px] uppercase tracking-wide text-zinc-500">
+          <div className={`${GRID} text-[10px] uppercase tracking-wide text-zinc-500`}>
             <span>name</span>
             <span>type</span>
-            <span>preset</span>
+            <span>references</span>
+            <span>on delete</span>
             <span>default</span>
             <span>null</span>
             <span>pk</span>
             <span />
           </div>
-          {cols.map((c, i) => (
-            <div key={i} className="grid grid-cols-[1fr_1fr_90px_1fr_36px_36px_24px] items-center gap-1.5">
-              <input value={c.name} onChange={(e) => setCol(i, { name: e.target.value })} placeholder="column" className={`${tk.input} font-mono`} />
-              <select
-                value={c.type}
-                onChange={(e) => setCol(i, { type: e.target.value, preset: '' })}
-                className={tk.select}
-                disabled={c.preset === 'serial'}
-              >
-                {c.preset === 'serial' && <option value="serial">serial</option>}
-                {typeOptions(enums).map((o) => (
-                  <option key={o.value} value={o.value}>
-                    {o.label}
-                  </option>
-                ))}
-              </select>
-              <select value={c.preset ?? ''} onChange={(e) => applyPreset(i, e.target.value as ColRow['preset'])} className={tk.select}>
-                <option value="">—</option>
-                <option value="serial">serial pk</option>
-                <option value="uuid">uuid pk</option>
-              </select>
-              <input
-                value={c.type === 'serial' ? '' : (c.default ?? '')}
-                onChange={(e) => setCol(i, { default: e.target.value })}
-                // serial installs its own nextval default; a second one is a pg error.
-                disabled={c.type === 'serial'}
-                placeholder={c.type === 'serial' ? 'auto' : "now() / 'str' / 0"}
-                className={`${tk.input} font-mono`}
-              />
-              <input type="checkbox" checked={c.nullable} onChange={(e) => setCol(i, { nullable: e.target.checked })} className={tk.checkbox} />
-              <input type="checkbox" checked={!!c.pk} onChange={(e) => setCol(i, { pk: e.target.checked })} className={tk.checkbox} />
-              <button onClick={() => setCols((prev) => prev.filter((_, idx) => idx !== i))} className="text-zinc-600 hover:text-red-400">
-                ✕
-              </button>
-            </div>
-          ))}
+          {cols.map((c, i) => {
+            const isSerial = c.type === 'serial';
+            return (
+              <div key={i} className={GRID}>
+                <input
+                  value={c.name}
+                  onChange={(e) => setCol(i, { name: e.target.value })}
+                  placeholder="column"
+                  className={`${tk.input} font-mono`}
+                />
+                <select value={c.type} onChange={(e) => setCol(i, { type: e.target.value })} className={tk.select}>
+                  {typeOptions(enums).map((o) => (
+                    <option key={o.value} value={o.value}>
+                      {o.label}
+                    </option>
+                  ))}
+                </select>
+
+                {/* Foreign keys are declarable HERE, while creating the table — the
+                    first place anyone looks. Only PK/unique columns are offered,
+                    since those are the only legal targets. */}
+                <select value={refValue(c.references)} onChange={(e) => setRef(i, e.target.value)} className={`${tk.select} font-mono`}>
+                  <option value="">—</option>
+                  {targets.map((t) => (
+                    <optgroup key={t.table} label={t.table}>
+                      {t.columns.map((tc) => (
+                        <option key={tc.name} value={`${t.table}.${tc.name}`}>
+                          {t.table}.{tc.name}
+                        </option>
+                      ))}
+                    </optgroup>
+                  ))}
+                </select>
+                <select
+                  value={c.references?.onDelete ?? 'no action'}
+                  onChange={(e) => c.references && setCol(i, { references: { ...c.references, onDelete: e.target.value } })}
+                  disabled={!c.references}
+                  className={tk.select}
+                >
+                  {ON_DELETE_OPTIONS.map((o) => (
+                    <option key={o.value} value={o.value}>
+                      {o.label}
+                    </option>
+                  ))}
+                </select>
+
+                <input
+                  value={isSerial ? '' : (c.default ?? '')}
+                  onChange={(e) => setCol(i, { default: e.target.value })}
+                  // serial installs its own nextval default; a second one is a pg error.
+                  disabled={isSerial}
+                  placeholder={isSerial ? 'auto' : "now() / 'str' / 0"}
+                  className={`${tk.input} font-mono`}
+                />
+                <input
+                  type="checkbox"
+                  checked={c.nullable}
+                  disabled={isSerial}
+                  onChange={(e) => setCol(i, { nullable: e.target.checked })}
+                  className={tk.checkbox}
+                />
+                <input type="checkbox" checked={!!c.pk} onChange={(e) => setCol(i, { pk: e.target.checked })} className={tk.checkbox} />
+                <button
+                  onClick={() => setCols((prev) => prev.filter((_, idx) => idx !== i))}
+                  title="Remove column"
+                  className="text-zinc-600 hover:text-red-400"
+                >
+                  ✕
+                </button>
+              </div>
+            );
+          })}
           <button onClick={() => setCols((prev) => [...prev, emptyCol()])} className={tk.btn2}>
             + column
           </button>

@@ -109,6 +109,15 @@ A silo needing a new shared helper adds it under its own dir and flags it for ho
   finding are both first-class.
 - **Timestamps**: `lib/dml.ts` serializes timestamptz/timestamp/date to ISO text
   in SQL — don't re-parse on the client, just display.
+- **Foreign keys have THREE entry points**, because the first version had one and it
+  was a 15px link nobody found: inline `references` while creating a table (the first
+  place anyone looks), a table-level `+ Foreign key` button that asks which column,
+  and a per-column `+ fk` button. Only PK/unique columns are offered as targets since
+  those are the only ones Postgres accepts, and choosing a target auto-matches the
+  source column's type so pg doesn't reject the constraint.
+- **No per-row "preset" control.** `serial` and `uuid` are first-class entries in the
+  type list instead. A preset dropdown on every column was one more thing to decode
+  per row, and all it encoded was "auto-generated key" — a property of the type.
 - **FK peek** (`app/content/FkPeek.tsx` + `/api/content/peek`): hovering a foreign key
   shows the referenced row. Which columns appear is a server-side HEURISTIC
   (`peekColumns` in `lib/dml.ts`) — referenced column, then the most name-like column,
