@@ -9,6 +9,7 @@
  *
  * Everything is a factory taking explicit config — no env vars are read in here, no
  * framework imports. Your app binds names, secrets, and tables once and re-exports;
+ * plus an "act as" user switcher that hooks your one identity seam.
  * OIDC and WebAuthn ceremony helpers arrive in a later minor.
  */
 
@@ -36,4 +37,13 @@ export {
   type MintedSession,
   type OriginScope,
 } from './sessions.js';
+export {
+  createActAs,
+  type ActAs,
+  type ActAsState,
+  type ActAsMode,
+  type ActAsRefusal,
+  type ActAsAuditEvent,
+  type CreateActAsOptions,
+} from './actAs.js';
 export { firstForwardedIp } from './ip.js';
