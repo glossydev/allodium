@@ -362,8 +362,14 @@ export default function AdminBuilder() {
           {/* ---------------------------- preview ---------------------------- */}
           <PreviewPane name={draft.name} dirty={dirty} nonce={previewNonce} exists={views.some((v) => v.name === draft.name)} />
         </div>
+      ) : views.length > 0 ? (
+        // Views exist and one is being opened. Showing the empty state here would
+        // claim there are none — which is simply untrue, and the load can take a
+        // few seconds on a cold route.
+        <LoadingState />
       ) : (
-        <div className="flex flex-1 items-center justify-center">
+        <div className="flex flex-1 flex-col items-center justify-center gap-2">
+          <p className={`text-xs ${tk.muted}`}>No admin screens yet.</p>
           <button onClick={() => setCreating(true)} className={tk.btn}>
             + Build your first admin screen
           </button>

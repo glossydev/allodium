@@ -5,8 +5,15 @@ running the developer console against a database. Start here.
 
 ## Guides
 
+- **[The developer console](./console/index.html)** — all seven silos, with screenshots,
+  the safety model and troubleshooting. Self-contained HTML; open it in a browser.
 - **[Act as](./act-as.md)** — the user switcher. Resolve the whole application as
   another user for testing and support, without replacing your session.
+
+> The console page is **generated**. `scripts/console-screenshots.mjs` drives a real
+> browser against a running console to capture the screenshots, and
+> `scripts/build-console-docs.mjs` inlines them and emits the HTML — so the images
+> regenerate with the UI instead of rotting. Run the console, then both scripts.
 
 ## Package reference
 

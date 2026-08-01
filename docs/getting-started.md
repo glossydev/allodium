@@ -183,6 +183,12 @@ in `apps/console/.env.local` is wrong or the container is not running
 `dist/`, so run `npm run build` in the package **and restart the console**. Next caches
 the resolved module.
 
+**Pages suddenly 500 with `Cannot find module './901.js'`** — something ran
+`next build` while `next dev` was running and overwrote the `.next` directory
+underneath it. `npm run build` at the repository root does exactly this, because it
+fans out to every workspace including the console. Stop the server, delete
+`apps/console/.next`, and start again. Build first, then run — not both at once.
+
 **`npm audit` reports high-severity vulnerabilities in the cloned repo** — and **do not
 run `npm audit fix --force`**. It would "fix" them by installing `next@9.3.3`, a
 downgrade of six major versions that breaks everything.
