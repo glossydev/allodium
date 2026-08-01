@@ -8,11 +8,23 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
         with:
           node-version: 22
           cache: npm
+
       - run: npm ci
-      - run: npm run typecheck
+
+      # BUILD BEFORE TYPECHECK. The console imports @allodium/* through their
+      # exports maps, which point at dist/ — so with no dist/ every one of those
+      # imports is an unresolved module and typecheck fails with TS2307 before it
+      # has checked anything real. Packages build first (npm orders workspace
+      # scripts by dependency), which is what makes the console's check possible.
       - run: npm run build
+
+      - run: npm run typecheck
+
+      # Pure unit batteries — no database required, so they run on every push.
+      # The session/integration battery needs live Postgres and is not run here.
+      - run: node packages/auth/test/act-as.mjs
