@@ -1,5 +1,5 @@
 import 'server-only';
-import { readdir, readFile } from 'node:fs/promises';
+import { mkdir, readdir, readFile, unlink, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import type { ViewDefinition } from '@allodium/admin/view';
 
@@ -39,6 +39,31 @@ export async function loadView(name: string): Promise<ViewDefinition | null> {
     return JSON.parse(raw) as ViewDefinition;
   } catch {
     return null;
+  }
+}
+
+/**
+ * Write a definition to disk. The console is a build-time tool with filesystem
+ * access, so authoring produces a file you commit — not a row someone has to
+ * migrate between environments.
+ */
+export async function saveView(name: string, definition: ViewDefinition): Promise<{ ok: true; path: string } | { ok: false; error: string }> {
+  if (!SAFE_NAME.test(name)) return { ok: false, error: 'Name may contain letters, numbers, hyphens and underscores only' };
+  const dir = VIEWS_DIR();
+  await mkdir(dir, { recursive: true });
+  const file = path.join(dir, `${name}.view.json`);
+  // Trailing newline so the file is a well-behaved citizen of a git diff.
+  await writeFile(file, JSON.stringify(definition, null, 2) + '\n', 'utf8');
+  return { ok: true, path: file };
+}
+
+export async function deleteView(name: string): Promise<boolean> {
+  if (!SAFE_NAME.test(name)) return false;
+  try {
+    await unlink(path.join(VIEWS_DIR(), `${name}.view.json`));
+    return true;
+  } catch {
+    return false;
   }
 }
 
