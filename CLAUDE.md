@@ -13,6 +13,25 @@ code ChapterHub runs in production; nothing ships here that hasn't survived live
 A GlossyDev project (Adam's dev business); ChapterHub is a separate LLC that consumes it.
 Agent brain (memories/setup, private): `glossydev/allodium-agent-brain`.
 
+## Where you are
+
+The VS Code workspace root is `projects/allodium/`, which holds **two sibling repos plus
+shared agent state**:
+
+```
+projects/allodium/          <- workspace root (not a repo itself)
+  .brain/                   <- agent brain, its own repo (glossydev/allodium-agent-brain)
+  .claude/                  <- Claude Code settings
+  allodium/                 <- THIS repo: the library + console
+  allodium-site/            <- the site, separate repo with its own session
+```
+
+You own `allodium/`. The site reads `docs/` and `packages/*/README.md` from here at build
+time and never authors documentation of its own — so anything the site says about the
+console changes by changing the console. Leave `allodium-site/` to its session.
+
+Shell cwd is no longer the repo root, so prefer absolute paths or an explicit `cd`.
+
 ## Layout
 
 npm-workspaces monorepo (`packages/*` + `apps/*`), plain TypeScript, ESM-only,
