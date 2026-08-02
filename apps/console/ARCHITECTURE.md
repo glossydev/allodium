@@ -89,9 +89,34 @@ optimized for developers: find specific things fast AND expose lots of data to s
 | Users | `app/users/**`, `app/api/users/**` |
 | Roles & Permissions | `app/roles/**`, `app/api/roles/**` |
 | Files | `app/files/**`, `app/api/files/**` |
-| SQL + Admin Builder | `app/sql/**`, `app/api/sql/**`, `app/admin-builder/**` |
+| SQL | `app/sql/**`, `app/api/sql/**` |
+| Admin Builder | `app/admin-builder/**`, `app/api/admin-views/**`, `app/api/admin/**`, `lib/views.ts`, `lib/view-builder.ts`, `lib/admin-runtime.ts` |
 
 A silo needing a new shared helper adds it under its own dir and flags it for hoisting.
+
+## View files (`admin/views/*.view.json`)
+
+The artifact the Admin Builder writes and the dashboard reads. Four rules, each of
+which was a bug first:
+
+- **Omission means the DEFAULT, never "off".** No `fields` key resolves to EVERY
+  visible column (`def.fields ?? impliedFields(meta)` in the resolver), so anything
+  reading a definition must agree — the builder once showed a full file as an empty
+  screen. Same for `title`: absent means `humanize(table)`, and `pruneDefaults`
+  strips a title equal to it, so use the package's `humanize`, never a local copy.
+- **Writes are atomic**: temp file in the same directory, then `rename` over the
+  target. `writeFile` truncates before filling, and a reader in that window gets a
+  truncated document (28 of 253 reads under contention). On Windows `rename` fails
+  EPERM while any process holds the destination open, so it retries and then falls
+  back to a plain write rather than losing a save.
+- **`loadView` returns null only for an ABSENT file.** A file that exists but will
+  not parse throws with the parser's message; reporting it as "unknown view" is a
+  lie about a file sitting right there. It also re-reads before believing a parse
+  failure, which absorbs any non-atomic writer including editors and `git checkout`.
+- **`$schema` is stamped on every save** — a relative path to the installed
+  `@allodium/admin/view.schema.json`, re-derived each time so moving the repo heals
+  it. That schema is a second declaration of the format; `packages/admin/test/view-schema.mjs`
+  (run by `npm test` in CI) is what keeps it from drifting away from `src/view.ts`.
 
 ## Conventions
 
