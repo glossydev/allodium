@@ -29,6 +29,12 @@ export interface Draft {
   listColumns: string[];
   pageSize: number;
   searchColumns: string[];
+  /**
+   * The file on disk has no `fields` key, which the runtime reads as "every
+   * visible column, including ones added later". Tracked so the editor can say
+   * so — saving pins the list and that automatic behavior stops.
+   */
+  implicitFields: boolean;
 }
 
 export const fieldKeyOf = (f: Field): string =>

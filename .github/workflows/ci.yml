@@ -28,3 +28,9 @@ jobs:
       # Pure unit batteries — no database required, so they run on every push.
       # The session/integration battery needs live Postgres and is not run here.
       - run: node packages/auth/test/act-as.mjs
+
+      # Workspace `test` scripts. Currently the view-schema drift guard, which
+      # nothing else can catch: view.schema.json and src/view.ts declare the same
+      # format twice and neither imports the other, so a build stays green while
+      # the shipped schema quietly starts lying about the format.
+      - run: npm test

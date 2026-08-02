@@ -23,14 +23,17 @@
       "types": "./dist/react/index.d.ts",
       "import": "./dist/react/index.js"
     },
+    "./view.schema.json": "./view.schema.json",
     "./package.json": "./package.json"
   },
   "files": [
-    "dist"
+    "dist",
+    "view.schema.json"
   ],
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "typecheck": "tsc -p tsconfig.json --noEmit"
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "node test/view-schema.mjs"
   },
   "engines": {
     "node": ">=20"

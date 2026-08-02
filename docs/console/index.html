@@ -488,6 +488,7 @@ npm run dev</code></pre>
   <p>Saving writes a <code>.view.json</code> file into your repository — committed and reviewed
   like any other code, not a row in a database that drifts between environments.</p>
   <pre><code>{
+  <span class="k">"$schema"</span>: <span class="s">"../../node_modules/@allodium/admin/view.schema.json"</span>,
   <span class="k">"table"</span>: <span class="s">"orders"</span>,
   <span class="k">"title"</span>: <span class="s">"Customer orders"</span>,
   <span class="k">"fields"</span>: [
@@ -499,6 +500,22 @@ npm run dev</code></pre>
   <p>The file records <em>decisions only</em>. Anything the runtime would infer — a label matching
   the column name, a widget matching the column type — is stripped before writing, so a
   <code>git diff</code> shows what you actually changed instead of a wall of restated defaults.</p>
+  <p>The <code>$schema</code> line is written for you, pointing at the copy of
+  <code>@allodium/admin</code> you have installed — so these files are meant to be hand-edited too.
+  Open one in an editor and you get completion, the valid widget names per field kind, and the
+  documentation for every option inline. It is a relative path rather than a URL because it needs
+  no network and it pins the file to the version of the runtime that will render it.</p>
+  <p>Writes are atomic: a temp file beside the target, then a rename over it. A dashboard reading
+  these files while you save must never catch one half-written.</p>
+
+  <h3>Order, and removing a screen</h3>
+  <p>Field order in the file is field order on the screen. Drag a row by its grip to move it, or use
+  the arrows — which exist because drag-and-drop cannot be driven from a keyboard.</p>
+  <p><strong>Delete</strong> removes the <code>.view.json</code> from your repository and nothing
+  else; the table and its rows are untouched. It is a tracked file, so
+  <code>git checkout</code> brings it back.</p>
+  <p>A file with no <code>fields</code> key means <em>every</em> visible column, including ones added
+  by a later migration — so the builder shows them all ticked, and says that saving pins the list.</p>
   <p>The preview beside it is the genuine runtime: the same components a deployed dashboard
   imports, hitting the same resolver, against real rows. It renders from the file on disk, and
   says so when you have unsaved edits — previewing the draft would let you approve a screen that

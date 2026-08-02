@@ -49,7 +49,9 @@ export async function PUT(request: NextRequest, ctx: Ctx) {
     const res = await saveView(name, pruned);
     if (!res.ok) return bad(res.error);
     console.log(`[console] SAVE view ${name}.view.json`);
-    return ok({ name, definition: pruned, path: res.path, warnings });
+    // res.definition, not `pruned` — saveView stamps the $schema pointer, and the
+    // response should be the bytes that hit the disk.
+    return ok({ name, definition: res.definition, path: res.path, warnings });
   } catch (e) {
     return oops(e);
   }

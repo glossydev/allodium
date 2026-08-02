@@ -1,0 +1,207 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://unpkg.com/@allodium/admin/view.schema.json",
+  "title": "Allodium view definition",
+  "description": "A single admin screen. The developer console writes these; the admin dashboard reads them. Everything derivable from the database — types, nullability, enum members, which table a foreign key points at — is read from the live catalog at render time and deliberately not repeated here.",
+  "type": "object",
+  "required": ["table"],
+  "additionalProperties": false,
+  "properties": {
+    "$schema": {
+      "type": "string",
+      "description": "Editor autocomplete only. Ignored at runtime."
+    },
+    "table": {
+      "type": "string",
+      "minLength": 1,
+      "description": "SQL table this screen edits."
+    },
+    "title": {
+      "type": "string",
+      "description": "Heading. Defaults to the table name, title-cased."
+    },
+    "description": {
+      "type": "string",
+      "description": "Shown under the heading — what this screen is for, in the operator's language."
+    },
+    "primaryKey": {
+      "type": "string",
+      "description": "Column that identifies a row. Defaults to the table's primary key, which is almost always right."
+    },
+    "display": {
+      "type": "string",
+      "description": "How a row of THIS table is labelled when something else references it. A column name, or a template: \"{first_name} {last_name}\". Defining it here means the table describes itself once, for every screen that points at it.",
+      "examples": ["name", "title", "{first_name} {last_name}"]
+    },
+    "fields": {
+      "type": "array",
+      "description": "Fields, in the order they should appear. Omit to expose every visible column.",
+      "items": { "$ref": "#/definitions/field" }
+    },
+    "list": { "$ref": "#/definitions/list" }
+  },
+
+  "definitions": {
+    "field": {
+      "description": "A column, a foreign key, or a many-to-many.",
+      "oneOf": [
+        { "$ref": "#/definitions/columnField" },
+        { "$ref": "#/definitions/relationField" },
+        { "$ref": "#/definitions/m2mField" }
+      ]
+    },
+
+    "columnField": {
+      "type": "object",
+      "title": "column",
+      "description": "A plain column on this view's own table.",
+      "required": ["column"],
+      "additionalProperties": false,
+      "properties": {
+        "kind": { "const": "column" },
+        "column": { "type": "string", "minLength": 1, "description": "Column name on this view's table." },
+        "widget": {
+          "description": "Input to render. Defaults from the SQL type: enum → select, boolean → checkbox, timestamptz → datetime, jsonb → json, text[] → tags, numeric/int → number, everything else → text.",
+          "enum": ["text", "textarea", "markdown", "number", "checkbox", "select", "radio", "date", "datetime", "json", "tags"]
+        },
+        "options": {
+          "type": "array",
+          "description": "For select/radio on a NON-enum column. Enum columns get their members from the database automatically — listing them here would be a second source of truth.",
+          "items": {
+            "type": "object",
+            "required": ["value"],
+            "additionalProperties": false,
+            "properties": {
+              "value": { "type": "string" },
+              "label": { "type": "string" }
+            }
+          }
+        },
+        "placeholder": { "type": "string" },
+        "label": { "$ref": "#/definitions/label" },
+        "help": { "$ref": "#/definitions/help" },
+        "readOnly": { "$ref": "#/definitions/readOnly" },
+        "required": { "$ref": "#/definitions/required" },
+        "in": { "$ref": "#/definitions/in" }
+      }
+    },
+
+    "relationField": {
+      "type": "object",
+      "title": "relation (foreign key)",
+      "description": "Which row of another table this one is attached to. The console fills `relation` in from the catalog's FK graph; the genuinely human decision is `display`.",
+      "required": ["kind", "column", "relation"],
+      "additionalProperties": false,
+      "properties": {
+        "kind": { "const": "relation" },
+        "column": { "type": "string", "minLength": 1, "description": "The foreign-key column on this view's table." },
+        "relation": {
+          "type": "object",
+          "required": ["table"],
+          "additionalProperties": false,
+          "properties": {
+            "table": { "type": "string", "minLength": 1, "description": "Referenced table." },
+            "value": { "type": "string", "description": "Referenced column — the value actually stored. Defaults to that table's primary key." },
+            "display": {
+              "type": "string",
+              "description": "Column or template shown to the operator, since the database stores an opaque id. Falls back to the target table's own `display`.",
+              "examples": ["name", "{first_name} {last_name}"]
+            },
+            "filter": {
+              "type": "object",
+              "description": "Restrict selectable rows, e.g. { \"archived\": false }.",
+              "additionalProperties": { "type": ["string", "number", "boolean", "null"] }
+            }
+          }
+        },
+        "widget": {
+          "description": "select for many options, radio for a handful, autocomplete for very many.",
+          "enum": ["select", "radio", "autocomplete"]
+        },
+        "label": { "$ref": "#/definitions/label" },
+        "help": { "$ref": "#/definitions/help" },
+        "readOnly": { "$ref": "#/definitions/readOnly" },
+        "required": { "$ref": "#/definitions/required" },
+        "in": { "$ref": "#/definitions/in" }
+      }
+    },
+
+    "m2mField": {
+      "type": "object",
+      "title": "many-to-many",
+      "description": "A many-to-many across a join table. A join table is a composite primary key whose columns are all foreign keys — NOT merely 'a table with two foreign keys'. Any other column on it is payload (granted_at, sort_order) and is not editable through this field.",
+      "required": ["kind", "through", "near", "far", "farTable"],
+      "additionalProperties": false,
+      "properties": {
+        "kind": { "const": "m2m" },
+        "name": { "type": "string", "description": "Field name in the form's value object; it has no column of its own. Defaults to farTable." },
+        "through": { "type": "string", "minLength": 1, "description": "The join table." },
+        "near": { "type": "string", "minLength": 1, "description": "Join-table column pointing back at this view's table." },
+        "far": { "type": "string", "minLength": 1, "description": "Join-table column pointing at the other side." },
+        "farTable": { "type": "string", "minLength": 1, "description": "The table on the other side." },
+        "farValue": { "type": "string", "description": "Column `far` references. Defaults to farTable's primary key." },
+        "display": {
+          "type": "string",
+          "description": "Column or template shown per option. Falls back to the far table's own `display`."
+        },
+        "widget": { "enum": ["checkboxes", "multiselect", "tags"] },
+        "label": { "$ref": "#/definitions/label" },
+        "help": { "$ref": "#/definitions/help" },
+        "readOnly": { "$ref": "#/definitions/readOnly" },
+        "required": { "$ref": "#/definitions/required" },
+        "in": { "$ref": "#/definitions/in" }
+      }
+    },
+
+    "list": {
+      "type": "object",
+      "description": "List-screen behavior.",
+      "additionalProperties": false,
+      "properties": {
+        "columns": {
+          "type": "array",
+          "description": "Columns shown in the table, in order. Defaults to the first few fields.",
+          "items": { "type": "string" }
+        },
+        "pageSize": { "type": "integer", "minimum": 1, "description": "Rows per page. Defaults to 25." },
+        "sort": {
+          "type": "object",
+          "required": ["column"],
+          "additionalProperties": false,
+          "properties": {
+            "column": { "type": "string" },
+            "direction": { "enum": ["asc", "desc"] }
+          }
+        },
+        "searchColumns": {
+          "type": "array",
+          "description": "Columns a search box should match against (ILIKE).",
+          "items": { "type": "string" }
+        }
+      }
+    },
+
+    "label": {
+      "type": "string",
+      "description": "Human label. Defaults to the column name, title-cased."
+    },
+    "help": {
+      "type": "string",
+      "description": "Help text under the input. Omit to inherit the column's Postgres COMMENT, so a description written once in the schema reaches every screen without being restated."
+    },
+    "readOnly": {
+      "type": "boolean",
+      "description": "Visible but not editable."
+    },
+    "required": {
+      "type": "boolean",
+      "description": "Override the schema's nullability. Defaults to NOT NULL ⇒ required."
+    },
+    "in": {
+      "type": "array",
+      "description": "Where this field appears. Defaults to both.",
+      "items": { "enum": ["list", "form"] },
+      "uniqueItems": true
+    }
+  }
+}

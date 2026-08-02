@@ -1,5 +1,6 @@
 'use client';
 
+import { useRef } from 'react';
 import { tk } from '@/ui/tokens';
 import type { ClientTable } from '../content/types';
 import { type DraftField, type ColumnField, type RelationField, type ManyToManyField, fieldKeyOf, fieldKind, WIDGETS } from './types';
@@ -12,6 +13,10 @@ import { type DraftField, type ColumnField, type RelationField, type ManyToManyF
  * for a relation, WHICH COLUMN OF THE OTHER TABLE TO SHOW. That last one is the
  * only decision the console genuinely cannot make for you, so it gets a control
  * of its own rather than hiding among the rest.
+ *
+ * Reordering works two ways on purpose. Dragging is what anyone reaches for when
+ * moving a field across twenty others; the arrows stay because drag-and-drop is
+ * pointer-only and unusable from a keyboard.
  */
 export default function FieldRow({
   draft,
@@ -19,22 +24,45 @@ export default function FieldRow({
   count,
   tables,
   expanded,
+  dragging,
+  dropEdge,
   onToggleExpand,
   onChange,
   onMove,
+  onDragStart,
+  onDragOverRow,
+  onDrop,
+  onDragEnd,
 }: {
   draft: DraftField;
   index: number;
   count: number;
   tables: ClientTable[];
   expanded: boolean;
+  /** This row is the one being dragged — dimmed so the gap it leaves is legible. */
+  dragging: boolean;
+  /** Where the insertion line goes if the drop lands here, or null for no line. */
+  dropEdge: 'top' | 'bottom' | null;
   onToggleExpand: () => void;
   onChange: (next: DraftField) => void;
   onMove: (delta: number) => void;
+  onDragStart: () => void;
+  onDragOverRow: () => void;
+  onDrop: () => void;
+  onDragEnd: () => void;
 }) {
   const f = draft.field;
   const key = fieldKeyOf(f);
   const kind = fieldKind(f);
+
+  // A drag only counts if it started on the grip — dragging a label or a help-text
+  // input should select text, not reorder the form.
+  //
+  // A ref, not state: the browser decides whether a drag may begin the instant the
+  // pointer passes its threshold, which can be before React has re-rendered with a
+  // new `draggable`. So the row stays permanently draggable and dragstart cancels
+  // itself when the grip wasn't the origin — a decision that is always current.
+  const grip = useRef(false);
 
   const patchField = (patch: Record<string, unknown>) => onChange({ ...draft, field: { ...f, ...patch } as typeof f });
 
@@ -43,9 +71,54 @@ export default function FieldRow({
   const targetTable = relation ? tables.find((t) => t.name === relation.relation.table) : m2m ? tables.find((t) => t.name === m2m.farTable) : null;
 
   return (
-    <div data-field-row={key} className={`rounded border ${draft.include ? 'border-zinc-700 bg-zinc-900' : 'border-zinc-800/60 bg-zinc-950'}`}>
+    <div
+      data-field-row={key}
+      draggable
+      onDragStart={(e) => {
+        const armed = grip.current;
+        grip.current = false;
+        if (!armed) return e.preventDefault(); // not from the grip — let it be a selection
+        // Firefox refuses to start a drag without payload on the dataTransfer.
+        e.dataTransfer.effectAllowed = 'move';
+        e.dataTransfer.setData('text/plain', key);
+        onDragStart();
+      }}
+      onDragOver={(e) => {
+        e.preventDefault(); // the default is "refuse the drop"
+        e.dataTransfer.dropEffect = 'move';
+        onDragOverRow();
+      }}
+      onDrop={(e) => {
+        e.preventDefault();
+        onDrop();
+      }}
+      onDragEnd={() => {
+        grip.current = false;
+        onDragEnd();
+      }}
+      // Pressing the grip and releasing without dragging must not leave it armed.
+      onMouseUp={() => {
+        grip.current = false;
+      }}
+      className={`rounded border ${draft.include ? 'border-zinc-700 bg-zinc-900' : 'border-zinc-800/60 bg-zinc-950'} ${
+        dragging ? 'opacity-40' : ''
+      } ${dropEdge === 'top' ? 'border-t-2 border-t-emerald-500' : ''} ${
+        dropEdge === 'bottom' ? 'border-b-2 border-b-emerald-500' : ''
+      }`}
+    >
       {/* Collapsed row */}
       <div className="flex items-center gap-2 px-2 py-1.5">
+        <span
+          data-drag-handle={key}
+          onMouseDown={() => {
+            grip.current = true;
+          }}
+          title="Drag to reorder"
+          aria-hidden="true"
+          className="cursor-grab select-none px-0.5 text-[11px] leading-none text-zinc-600 hover:text-zinc-300 active:cursor-grabbing"
+        >
+          ⋮⋮
+        </span>
         <input
           type="checkbox"
           checked={draft.include}
@@ -75,11 +148,22 @@ export default function FieldRow({
           ))}
         </select>
 
+        {/* The keyboard path to the same reorder the grip does with a pointer. */}
         <div className="flex flex-col">
-          <button onClick={() => onMove(-1)} disabled={index === 0} className="px-1 text-[9px] leading-none text-zinc-600 hover:text-zinc-200 disabled:opacity-30">
+          <button
+            onClick={() => onMove(-1)}
+            disabled={index === 0}
+            aria-label={`Move ${key} up`}
+            className="px-1 text-[9px] leading-none text-zinc-600 hover:text-zinc-200 disabled:opacity-30"
+          >
             ▲
           </button>
-          <button onClick={() => onMove(1)} disabled={index === count - 1} className="px-1 text-[9px] leading-none text-zinc-600 hover:text-zinc-200 disabled:opacity-30">
+          <button
+            onClick={() => onMove(1)}
+            disabled={index === count - 1}
+            aria-label={`Move ${key} down`}
+            className="px-1 text-[9px] leading-none text-zinc-600 hover:text-zinc-200 disabled:opacity-30"
+          >
             ▼
           </button>
         </div>

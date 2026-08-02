@@ -1,6 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
+import { humanize } from '@allodium/admin/view';
 import { tk } from '@/ui/tokens';
 import { fetchJson, LoadingState, ErrorBox, Modal } from '@/ui/primitives';
 import type { ClientCatalog, ClientTable } from '../content/types';
@@ -31,19 +32,29 @@ interface ViewSummary {
 export default function AdminBuilder() {
   const [catalog, setCatalog] = useState<ClientCatalog | null>(null);
   const [views, setViews] = useState<ViewSummary[] | null>(null);
+  const [schemaRef, setSchemaRef] = useState<string | null>(null);
   const [draft, setDraft] = useState<Draft | null>(null);
   const [savedJson, setSavedJson] = useState<string>(''); // for the dirty check
   const [expanded, setExpanded] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-  const [notice, setNotice] = useState<string | null>(null);
+  /**
+   * `sticky` survives the view-open that follows it. Deleting hands off to the
+   * open-next-view effect, which would otherwise wipe the "Deleted …" line before
+   * anyone read it — and in dev that effect runs twice, so any one-shot flag loses.
+   */
+  const [notice, setNotice] = useState<{ text: string; sticky?: boolean } | null>(null);
   const [creating, setCreating] = useState(false);
+  const [deleting, setDeleting] = useState(false);
   const [previewNonce, setPreviewNonce] = useState(0);
+  const [drag, setDrag] = useState<{ from: number; over: number } | null>(null);
 
   const refreshViews = useCallback(async () => {
-    const r = await fetchJson<{ views: ViewSummary[] }>('/api/admin-views');
-    if (r.ok) setViews(r.data.views);
-    else setError(r.error);
+    const r = await fetchJson<{ views: ViewSummary[]; schemaRef: string }>('/api/admin-views');
+    if (r.ok) {
+      setViews(r.data.views);
+      setSchemaRef(r.data.schemaRef);
+    } else setError(r.error);
   }, []);
 
   useEffect(() => {
@@ -65,6 +76,12 @@ export default function AdminBuilder() {
       const proposal = await fetchJson<{ definition: ViewDefinition }>(`/api/admin-views/propose?table=${encodeURIComponent(definition.table)}`);
       const candidates: Field[] = proposal.ok ? (proposal.data.definition.fields ?? []) : [];
 
+      // No `fields` key does NOT mean "no fields" — the runtime reads it as every
+      // visible column (resolver: `def.fields ?? impliedFields(meta)`). Showing
+      // them all unchecked would have the editor claim an empty screen while the
+      // preview beside it renders a full one.
+      const implicitFields = definition.fields === undefined;
+
       const chosen = new Map((definition.fields ?? []).map((f) => [fieldKeyOf(f), f]));
       const ordered: DraftField[] = [];
 
@@ -84,7 +101,7 @@ export default function AdminBuilder() {
         if (chosen.has(key)) continue;
         const col = table.columns.find((x) => x.name === key);
         ordered.push({
-          include: false,
+          include: implicitFields,
           field: c,
           inheritedHelp: col?.comment ?? null,
           meta: col ? { type: col.type, family: col.family, nullable: col.nullable, isPk: col.isPk } : undefined,
@@ -101,6 +118,7 @@ export default function AdminBuilder() {
         listColumns: definition.list?.columns ?? [],
         pageSize: definition.list?.pageSize ?? 25,
         searchColumns: definition.list?.searchColumns ?? [],
+        implicitFields,
       };
     },
     []
@@ -110,7 +128,7 @@ export default function AdminBuilder() {
     async (name: string) => {
       if (!catalog) return;
       setError(null);
-      setNotice(null);
+      setNotice((n) => (n?.sticky ? n : null));
       const r = await fetchJson<{ definition: ViewDefinition }>(`/api/admin-views/${name}`);
       if (!r.ok) return setError(r.error);
       const d = await buildDraft(name, r.data.definition, catalog);
@@ -138,7 +156,7 @@ export default function AdminBuilder() {
       if (d) {
         setDraft(d);
         setSavedJson(''); // never saved, so always dirty
-        setNotice(`Draft for ${table} — nothing written yet.`);
+        setNotice({ text: `Draft for ${table} — nothing written yet.` });
       }
     },
     [catalog, buildDraft]
@@ -159,11 +177,37 @@ export default function AdminBuilder() {
     setBusy(false);
     if (!r.ok) return setError(r.error);
     setSavedJson(JSON.stringify(definition));
-    setNotice(
-      `Saved admin/views/${draft.name}.view.json` + (r.data.warnings?.length ? ` — ${r.data.warnings.length} warning(s)` : '')
-    );
+    // The file now carries an explicit list, whatever it had before.
+    setDraft((d) => (d ? { ...d, implicitFields: false } : d));
+    setNotice({
+      text: `Saved admin/views/${draft.name}.view.json` + (r.data.warnings?.length ? ` — ${r.data.warnings.length} warning(s)` : ''),
+    });
     setPreviewNonce((n) => n + 1);
-    refreshViews();
+    // Awaited: until the list comes back, a newly created view isn't in `views`
+    // yet and everything keyed off it — Delete, the picker entry — reads as if
+    // the file that was just written does not exist.
+    await refreshViews();
+  };
+
+  /**
+   * Deleting a view deletes a FILE from the repo. That is recoverable through git
+   * and nothing else, so it is confirmed by name and never offered for a draft
+   * that was never written.
+   */
+  const destroy = async () => {
+    if (!draft) return;
+    setBusy(true);
+    setError(null);
+    const r = await fetchJson(`/api/admin-views/${draft.name}`, { method: 'DELETE' });
+    setBusy(false);
+    setDeleting(false);
+    if (!r.ok) return setError(r.error);
+    setNotice({ text: `Deleted admin/views/${draft.name}.view.json`, sticky: true });
+    // Drop the draft and let the open-first-view effect pick whatever remains.
+    // The refreshed list no longer contains this name, so it cannot reopen it.
+    setDraft(null);
+    setSavedJson('');
+    await refreshViews();
   };
 
   const patchField = (index: number, next: DraftField) =>
@@ -179,10 +223,25 @@ export default function AdminBuilder() {
       return { ...d, fields };
     });
 
+  /** Lift out and re-insert — a swap would be wrong for any drop beyond a neighbour. */
+  const reorderField = (from: number, to: number) =>
+    setDraft((d) => {
+      if (!d || from === to) return d;
+      const fields = [...d.fields];
+      const [moved] = fields.splice(from, 1);
+      fields.splice(to, 0, moved);
+      return { ...d, fields };
+    });
+
   if (error && !catalog) return <ErrorBox error={error} />;
   if (!catalog || !views) return <LoadingState />;
 
   const included = draft?.fields.filter((f) => f.include) ?? [];
+
+  // Does a file back this draft? Read from savedJson, which is set the moment a
+  // save succeeds — not from `views`, which is refetched afterwards and so reports
+  // "never written" for a beat about a file that demonstrably exists.
+  const onDisk = savedJson !== '';
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
@@ -190,12 +249,20 @@ export default function AdminBuilder() {
       <div className={tk.toolbar}>
         <select
           value={draft?.name ?? ''}
-          onChange={(e) => openView(e.target.value)}
+          // Clear explicitly: choosing a different view is the point at which a
+          // sticky "Deleted …" line stops being news.
+          onChange={(e) => {
+            setNotice(null);
+            openView(e.target.value);
+          }}
           className={`${tk.select} font-mono`}
         >
           {views.map((v) => (
             <option key={v.name} value={v.name}>
-              {v.name}.view.json
+              {/* The heading operators will see, when it isn't just the file name
+                  again — a file called cs-orders is worth labelling "Customer
+                  Orders" in the picker. */}
+              {v.name}.view.json{v.title && v.title !== humanize(v.name) ? ` — ${v.title}` : ''}
             </option>
           ))}
           {draft && !views.some((v) => v.name === draft.name) && <option value={draft.name}>{draft.name}.view.json (new)</option>}
@@ -203,10 +270,19 @@ export default function AdminBuilder() {
         <button onClick={() => setCreating(true)} className={tk.btn2}>
           + New view
         </button>
-        {notice && <span className={`text-[11px] ${tk.accent}`}>{notice}</span>}
+        {notice && <span className={`text-[11px] ${tk.accent}`}>{notice.text}</span>}
         {error && <span className={`text-[11px] text-red-400`}>{error}</span>}
         <button onClick={save} disabled={!draft || !dirty || busy} className={`${tk.btn} ml-auto`}>
           {busy ? 'Saving…' : dirty ? 'Save to file' : 'Saved'}
+        </button>
+        <button
+          onClick={() => setDeleting(true)}
+          // Nothing to delete for a draft with no file behind it.
+          disabled={!draft || busy || !onDisk}
+          title={draft && !onDisk ? 'This draft has never been written to disk' : 'Delete this view file'}
+          className={tk.btnDanger}
+        >
+          Delete
         </button>
       </div>
 
@@ -265,6 +341,17 @@ export default function AdminBuilder() {
               </button>
             </div>
 
+            {draft.implicitFields && (
+              // Worth saying out loud: this file currently tracks the table, and
+              // saving trades that for an explicit list. Neither is wrong, but it
+              // should be a choice rather than a surprise after the next migration.
+              <p className={`mb-1.5 rounded border border-zinc-800 bg-zinc-900/60 px-2 py-1 text-[10px] leading-relaxed ${tk.muted}`}>
+                This file lists no fields, so the screen currently shows{' '}
+                <span className="text-zinc-300">every column — including any added later</span>. Saving writes the list
+                out, and new columns stop appearing on their own.
+              </p>
+            )}
+
             <div className="space-y-1">
               {draft.fields.map((f, i) => {
                 const key = fieldKeyOf(f.field);
@@ -276,9 +363,20 @@ export default function AdminBuilder() {
                     count={draft.fields.length}
                     tables={catalog.tables as ClientTable[]}
                     expanded={expanded === key}
+                    dragging={drag?.from === i}
+                    // The line sits on the edge the row will actually land against,
+                    // so the drop reads the same way it behaves.
+                    dropEdge={drag && drag.over === i && drag.from !== i ? (drag.from < i ? 'bottom' : 'top') : null}
                     onToggleExpand={() => setExpanded(expanded === key ? null : key)}
                     onChange={(next) => patchField(i, next)}
                     onMove={(delta) => moveField(i, delta)}
+                    onDragStart={() => setDrag({ from: i, over: i })}
+                    onDragOverRow={() => setDrag((s) => (s && s.over !== i ? { ...s, over: i } : s))}
+                    onDrop={() => {
+                      if (drag) reorderField(drag.from, i);
+                      setDrag(null);
+                    }}
+                    onDragEnd={() => setDrag(null)}
                   />
                 );
               })}
@@ -354,13 +452,20 @@ export default function AdminBuilder() {
                 {draft.name}.view.json — what gets written
               </summary>
               <pre className="mt-1.5 overflow-x-auto rounded border border-zinc-800 bg-zinc-950 p-2 font-mono text-[10px] leading-relaxed text-emerald-200">
-                {JSON.stringify(definition, null, 2)}
+                {/* The $schema line is stamped on save, so show it — this panel
+                    claims to be the file, and a preview missing its first line
+                    would be a small lie in the one place that promises none. */}
+                {JSON.stringify(schemaRef ? { $schema: schemaRef, ...definition } : definition, null, 2)}
               </pre>
+              <p className={`mt-1 text-[10px] ${tk.faint}`}>
+                The <span className="font-mono">$schema</span> line is written for you — hand-edit this file in an editor and
+                you get completion and inline docs for every option.
+              </p>
             </details>
           </div>
 
           {/* ---------------------------- preview ---------------------------- */}
-          <PreviewPane name={draft.name} dirty={dirty} nonce={previewNonce} exists={views.some((v) => v.name === draft.name)} />
+          <PreviewPane name={draft.name} dirty={dirty} nonce={previewNonce} exists={onDisk} />
         </div>
       ) : views.length > 0 ? (
         // Views exist and one is being opened. Showing the empty state here would
@@ -377,6 +482,33 @@ export default function AdminBuilder() {
       )}
 
       {creating && <NewViewModal tables={catalog.tables} existing={views.map((v) => v.name)} onClose={() => setCreating(false)} onCreate={startNew} />}
+
+      {deleting && draft && (
+        <Modal
+          title="Delete this view?"
+          onClose={() => setDeleting(false)}
+          footer={
+            <>
+              <button onClick={destroy} disabled={busy} className={tk.btnDanger}>
+                {busy ? 'Deleting…' : `Delete ${draft.name}.view.json`}
+              </button>
+              <button onClick={() => setDeleting(false)} className={tk.btn2}>
+                Cancel
+              </button>
+            </>
+          }
+        >
+          <div className="space-y-2">
+            <p className="text-xs leading-relaxed text-zinc-300">
+              This removes <span className="font-mono text-zinc-100">admin/views/{draft.name}.view.json</span> from the repo.
+              The <span className="font-mono">{draft.table}</span> table and its rows are untouched — only the screen goes away.
+            </p>
+            <p className={`text-[11px] ${tk.muted}`}>
+              It is a tracked file, so <span className="font-mono">git checkout</span> brings it back if this was a mistake.
+            </p>
+          </div>
+        </Modal>
+      )}
     </div>
   );
 }

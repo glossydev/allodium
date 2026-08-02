@@ -1,5 +1,9 @@
 import 'server-only';
 import type { ViewDefinition, Field, ColumnField, RelationField, ManyToManyField } from '@allodium/admin/view';
+// The runtime's own humanize, not a copy. pruneDefaults strips a title/label that
+// equals the default, so this MUST be the same function the resolver defaults with
+// or the console would strip decisions the runtime then fails to reproduce.
+import { humanize } from '@allodium/admin/view';
 import { getCatalog, type CatalogTable } from './catalog';
 
 /**
@@ -109,12 +113,6 @@ export async function proposeView(table: string): Promise<{ definition: ViewDefi
 }
 
 /* ---------------------------- writing it back ---------------------------- */
-
-const humanize = (name: string) =>
-  name
-    .replace(/_id$/, '')
-    .replaceAll('_', ' ')
-    .replace(/\b\w/g, (m) => m.toUpperCase());
 
 /**
  * Strip anything the runtime would have inferred anyway.
