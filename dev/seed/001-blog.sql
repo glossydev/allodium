@@ -10,7 +10,7 @@
 -- these tables (authors.user_id, authors.avatar_id, comments.parent_id are added
 -- there, NOT here — keep it that way or 002/003 will fail on re-run).
 --
--- Apply:  docker exec -i allodium-dev-pg psql -U chapterhub_user -d allodium_dev \
+-- Apply:  docker exec -i allodium-dev-pg psql -U allodium -d allodium_dev \
 --           -v ON_ERROR_STOP=1 < dev/seed/001-blog.sql
 
 \set ON_ERROR_STOP on

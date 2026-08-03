@@ -25,7 +25,7 @@
 --   wide table .............. products (14 columns)
 --   volume .................. ~260 orders / ~640 order_items for pagination + sorting
 --
--- Apply:  docker exec -i allodium-dev-pg psql -U chapterhub_user -d allodium_dev \
+-- Apply:  docker exec -i allodium-dev-pg psql -U allodium -d allodium_dev \
 --           -v ON_ERROR_STOP=1 < dev/seed/002-commerce-and-users.sql
 
 \set ON_ERROR_STOP on

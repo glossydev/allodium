@@ -10,7 +10,7 @@
 -- The console still layers the statement guard + read-only transaction on top; this
 -- is the floor beneath them.
 --
--- Apply:  docker exec -i allodium-dev-pg psql -U chapterhub_user -d allodium_dev \
+-- Apply:  docker exec -i allodium-dev-pg psql -U allodium -d allodium_dev \
 --           -v ON_ERROR_STOP=1 < dev/seed/004-readonly-role.sql
 --
 -- Then set in apps/console/.env.local:

@@ -15,7 +15,7 @@
 -- table-name-driven grants (role_permissions.table_name is a soft reference —
 -- deliberately NOT an FK, since tables aren't rows; drift shows in the console).
 --
--- Apply:  docker exec -i allodium-dev-pg psql -U chapterhub_user -d allodium_dev \
+-- Apply:  docker exec -i allodium-dev-pg psql -U allodium -d allodium_dev \
 --           -v ON_ERROR_STOP=1 < dev/seed/003-permissions-and-files.sql
 
 \set ON_ERROR_STOP on
