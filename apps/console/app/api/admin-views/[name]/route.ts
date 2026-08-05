@@ -2,7 +2,7 @@ import type { NextRequest } from 'next/server';
 import type { ViewDefinition } from '@allodium/admin/view';
 import { validateViewDefinition } from '@allodium/admin/view';
 import { deleteView, loadView, saveView } from '@/lib/views';
-import { pruneDefaults } from '@/lib/view-builder';
+import { pruneDefaults } from '@/lib/view-serialize';
 import { getViewResolver } from '@/lib/admin-runtime';
 import { ok, bad, oops, jsonBody } from '@/lib/api-helpers';
 

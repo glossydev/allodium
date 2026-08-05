@@ -1,9 +1,5 @@
 import 'server-only';
 import type { ViewDefinition, Field, ColumnField, RelationField, ManyToManyField } from '@allodium/admin/view';
-// The runtime's own humanize, not a copy. pruneDefaults strips a title/label that
-// equals the default, so this MUST be the same function the resolver defaults with
-// or the console would strip decisions the runtime then fails to reproduce.
-import { humanize } from '@allodium/admin/view';
 import { getCatalog, type CatalogTable } from './catalog';
 
 /**
@@ -114,71 +110,6 @@ export async function proposeView(table: string): Promise<{ definition: ViewDefi
 
 /* ---------------------------- writing it back ---------------------------- */
 
-/**
- * Strip anything the runtime would have inferred anyway.
- *
- * This is what keeps a saved file small and readable: a definition should record
- * DECISIONS, not restate defaults. It also means a `git diff` after using the
- * builder shows what you actually changed rather than a wall of noise — which is
- * the whole reason these are files instead of database rows.
- */
-export function pruneDefaults(def: ViewDefinition): ViewDefinition {
-  const out: ViewDefinition = { table: def.table };
-  if (def.title && def.title !== humanize(def.table)) out.title = def.title;
-  if (def.description) out.description = def.description;
-  if (def.display) out.display = def.display;
-  if (def.primaryKey) out.primaryKey = def.primaryKey;
-
-  if (def.fields?.length) {
-    out.fields = def.fields.map((f) => {
-      const clean: Record<string, unknown> = {};
-      const key = f.kind === 'm2m' ? ((f as ManyToManyField).name ?? (f as ManyToManyField).farTable) : (f as ColumnField).column;
-
-      if (f.kind === 'm2m') {
-        const m = f as ManyToManyField;
-        Object.assign(clean, {
-          kind: 'm2m',
-          name: m.name,
-          through: m.through,
-          near: m.near,
-          far: m.far,
-          farTable: m.farTable,
-        });
-        if (m.display) clean.display = m.display;
-        if (m.widget && m.widget !== 'checkboxes') clean.widget = m.widget;
-      } else if (f.kind === 'relation') {
-        const r = f as RelationField;
-        clean.kind = 'relation';
-        clean.column = r.column;
-        clean.relation = { table: r.relation.table, ...(r.relation.value ? { value: r.relation.value } : {}), ...(r.relation.display ? { display: r.relation.display } : {}) };
-        if (r.widget && r.widget !== 'select') clean.widget = r.widget;
-      } else {
-        const c = f as ColumnField;
-        clean.column = c.column;
-        // Widget is only recorded when it differs from what the column's type implies.
-        if (c.widget) clean.widget = c.widget;
-        if (c.options?.length) clean.options = c.options;
-        if (c.placeholder) clean.placeholder = c.placeholder;
-      }
-
-      if (f.label && f.label !== humanize(key)) clean.label = f.label;
-      if (f.help) clean.help = f.help;
-      if (f.readOnly) clean.readOnly = true;
-      if (f.required !== undefined) clean.required = f.required;
-      if (f.in && !(f.in.includes('list') && f.in.includes('form'))) clean.in = f.in;
-
-      return clean as unknown as Field;
-    });
-  }
-
-  if (def.list) {
-    const l: NonNullable<ViewDefinition['list']> = {};
-    if (def.list.columns?.length) l.columns = def.list.columns;
-    if (def.list.pageSize && def.list.pageSize !== 25) l.pageSize = def.list.pageSize;
-    if (def.list.sort?.column) l.sort = def.list.sort;
-    if (def.list.searchColumns?.length) l.searchColumns = def.list.searchColumns;
-    if (Object.keys(l).length) out.list = l;
-  }
-
-  return out;
-}
+// Serialization moved to ./view-serialize: it needs no catalog and no server-only
+// import, and keeping it dependency-free is what lets a test round-trip a
+// definition through it without standing up Next.

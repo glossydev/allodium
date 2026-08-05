@@ -8,7 +8,8 @@
     "dev": "next dev -H localhost -p 3180",
     "build": "next build",
     "start": "next start -H localhost -p 3180",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test": "node test/serializer.mjs"
   },
   "dependencies": {
     "@allodium/admin": "^0.1.0",

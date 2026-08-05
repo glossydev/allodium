@@ -119,6 +119,7 @@ export default function AdminBuilder() {
         pageSize: definition.list?.pageSize ?? 25,
         searchColumns: definition.list?.searchColumns ?? [],
         implicitFields,
+        source: definition,
       };
     },
     []
