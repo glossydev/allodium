@@ -4,6 +4,8 @@ import {
   type ColumnField,
   type RelationField,
   type ManyToManyField,
+  type Predicate,
+  normalizeFilter,
   fieldKey,
   humanize,
   isColumnField,
@@ -42,7 +44,7 @@ export interface ResolvedField {
   options?: { value: string; label: string }[];
   placeholder?: string;
   /** Relation + m2m: where the options come from. */
-  source?: { table: string; value: string; display?: string };
+  source?: { table: string; value: string; display?: string; filter?: Predicate[] };
 }
 
 export interface ResolvedView {
@@ -52,7 +54,7 @@ export interface ResolvedView {
   primaryKey: string;
   display?: string;
   fields: ResolvedField[];
-  list: { columns: string[]; pageSize: number; sort: { column: string; direction: 'asc' | 'desc' }; searchColumns: string[] };
+  list: { columns: string[]; pageSize: number; sort: { column: string; direction: 'asc' | 'desc' }; searchColumns: string[]; filter: Predicate[] };
   /**
    * Definitions that resolve but would render something useless — a select with no
    * options, a list column that isn't a field. Surfaced rather than swallowed,
@@ -70,6 +72,59 @@ export interface ListResult {
 }
 
 const err = (m: string) => new Error(m);
+
+/**
+ * One predicate as a SQL fragment, with its value bound as a parameter.
+ *
+ * `colExpr` is already-quoted and comes from a field the caller matched against
+ * the view — never from the request — which is the same rule the sort column
+ * follows. Values are always parameters; nothing here interpolates user input.
+ *
+ * Two deliberate asymmetries:
+ *  - the text predicates cast to ::text so they work on any column type, but the
+ *    ordered comparisons do NOT, because as text '9' > '500' and a "greater than
+ *    500" filter would quietly return the wrong rows;
+ *  - `ne` compiles to IS DISTINCT FROM. Plain `<>` drops NULL rows too, so
+ *    "hide the test account" would also hide every user with no email — a filter
+ *    removing rows it was never asked to remove is the silent kind of wrong.
+ */
+function predicateSql(p: Predicate, colExpr: string, params: unknown[]): string | null {
+  const bind = (v: unknown) => `$${params.push(v)}`;
+  const op = p.op ?? (Array.isArray(p.value) ? 'in' : p.value === null ? 'isNull' : 'eq');
+  const v = p.value;
+
+  switch (op) {
+    case 'isNull':
+      return `${colExpr} is null`;
+    case 'notNull':
+      return `${colExpr} is not null`;
+    case 'eq':
+      return v === null ? `${colExpr} is null` : `${colExpr} = ${bind(v)}`;
+    case 'ne':
+      return v === null ? `${colExpr} is not null` : `${colExpr} is distinct from ${bind(v)}`;
+    case 'lt':
+      return `${colExpr} < ${bind(v)}`;
+    case 'lte':
+      return `${colExpr} <= ${bind(v)}`;
+    case 'gt':
+      return `${colExpr} > ${bind(v)}`;
+    case 'gte':
+      return `${colExpr} >= ${bind(v)}`;
+    case 'contains':
+      return `${colExpr}::text ilike ${bind('%' + String(v) + '%')}`;
+    case 'startsWith':
+      return `${colExpr}::text ilike ${bind(String(v) + '%')}`;
+    case 'endsWith':
+      return `${colExpr}::text ilike ${bind('%' + String(v))}`;
+    case 'in': {
+      const list = Array.isArray(v) ? v : [v];
+      if (!list.length) return 'false'; // "in nothing" matches nothing, and an empty any() is a syntax error
+      return `${colExpr}::text = any(${bind(list.map((x) => (x === null ? null : String(x))))}::text[])`;
+    }
+    default:
+      return null; // unknown operator: validation rejects these, so this is belt-and-braces
+  }
+}
 
 /** Default widget for a column, from its SQL type. */
 function defaultWidget(c: ColumnMeta): string {
@@ -172,7 +227,7 @@ export function createViewResolver(db: Queryable, opts: { schema?: string; ttlMs
         help,
         required,
         widget: f.widget ?? 'select',
-        source: { table: f.relation.table, value, display: f.relation.display },
+        source: { table: f.relation.table, value, display: f.relation.display, filter: normalizeFilter(f.relation.filter) },
       };
     }
 
@@ -224,6 +279,23 @@ export function createViewResolver(db: Queryable, opts: { schema?: string; ttlMs
       if (!fields.some((f) => f.key === key)) warnings.push(`list.columns names "${key}", which is not a field on this view.`);
     }
 
+    // A baseline filter naming a column that isn't a field would silently do
+    // nothing — the screen would show every row and look correct. Say so.
+    const listFilter = normalizeFilter(def.list?.filter);
+    for (const p of listFilter) {
+      if (!fields.some((f) => f.key === p.column && f.column)) {
+        warnings.push(`list.filter names "${p.column}", which is not a column field on this view — that predicate is ignored.`);
+      }
+    }
+    for (const f of fields) {
+      for (const p of f.source?.filter ?? []) {
+        const target = await tableOrThrow(f.source!.table);
+        if (!target.columns.some((c) => c.name === p.column)) {
+          warnings.push(`"${f.key}" filters its options on "${p.column}", which ${f.source!.table} does not have — that predicate is ignored.`);
+        }
+      }
+    }
+
     return {
       table: def.table,
       title: def.title ?? humanize(def.table),
@@ -241,6 +313,7 @@ export function createViewResolver(db: Queryable, opts: { schema?: string; ttlMs
         searchColumns:
           def.list?.searchColumns ??
           listable.filter((f) => f.family === 'string' && f.kind === 'column').slice(0, 3).map((f) => f.key),
+        filter: listFilter,
       },
     };
   }
@@ -297,13 +370,25 @@ export function createViewResolver(db: Queryable, opts: { schema?: string; ttlMs
     const page = Math.max(1, o.page ?? 1);
     const pageSize = Math.min(200, Math.max(1, o.pageSize ?? view.list.pageSize));
 
+    // Clauses are ANDed and built in one pass so the parameter numbers stay in
+    // step: the baseline filter binds first, the search term after it.
     const params: unknown[] = [];
-    let where = '';
+    const clauses: string[] = [];
+
+    for (const p of view.list.filter) {
+      const field = view.fields.find((f) => f.key === p.column && f.column);
+      if (!field) continue; // resolve() already warned; don't invent a column
+      const sql = predicateSql(p, `t.${qid(field.column!)}`, params);
+      if (sql) clauses.push(sql);
+    }
+
     const search = o.search?.trim();
     if (search && view.list.searchColumns.length) {
-      params.push('%' + search + '%');
-      where = ' where ' + view.list.searchColumns.map((c) => `t.${qid(c)}::text ilike $1`).join(' or ');
+      const n = params.push('%' + search + '%');
+      clauses.push('(' + view.list.searchColumns.map((c) => `t.${qid(c)}::text ilike $${n}`).join(' or ') + ')');
     }
+
+    const where = clauses.length ? ' where ' + clauses.join(' and ') : '';
 
     // Sort column is validated against the view's own fields — never taken raw.
     const sortCol = view.fields.find((f) => f.key === o.sort && f.column)?.column ?? view.list.sort.column;
@@ -314,6 +399,10 @@ export function createViewResolver(db: Queryable, opts: { schema?: string; ttlMs
         `select ${select} from ${qid(def.table)} t\n${join}${where}\norder by t.${qid(sortCol)} ${dir} nulls last limit ${pageSize} offset ${(page - 1) * pageSize}`,
         params
       ),
+      // No joins here on purpose: every clause above resolves to a column on t,
+      // so the count needs nothing else. A predicate that reaches through a
+      // relation (searching by customer NAME rather than id) would have to add
+      // the joins to this query too, not just to the row query.
       db.query(`select count(*)::int as n from ${qid(def.table)} t${where}`, params),
     ]);
 
@@ -367,12 +456,23 @@ export function createViewResolver(db: Queryable, opts: { schema?: string; ttlMs
         : `concat_ws(' ', ${valid.map((c) => `${qid(c)}::text`).join(', ')})`
       : `${qid(field.source.value)}::text`;
 
+    // The filter is the view's own rule about what may be chosen; the search is
+    // the operator narrowing that. Both, ANDed — never one instead of the other.
     const params: unknown[] = [];
-    let where = '';
-    if (search?.trim()) {
-      params.push('%' + search.trim() + '%');
-      where = ` where ${labelExpr} ilike $1`;
+    const clauses: string[] = [];
+
+    for (const p of field.source.filter ?? []) {
+      if (!target.columns.some((c) => c.name === p.column)) continue; // warned at resolve time
+      const sql = predicateSql(p, qid(p.column), params);
+      if (sql) clauses.push(sql);
     }
+
+    if (search?.trim()) {
+      const n = params.push('%' + search.trim() + '%');
+      clauses.push(`${labelExpr} ilike $${n}`);
+    }
+
+    const where = clauses.length ? ' where ' + clauses.join(' and ') : '';
     const res = await db.query(
       `select ${qid(field.source.value)} as value, ${labelExpr} as label from ${qid(field.source.table)}${where} order by 2 limit ${Math.min(500, limit)}`,
       params

@@ -65,7 +65,63 @@ export interface ListOptions {
   sort?: { column: string; direction?: 'asc' | 'desc' };
   /** Columns a search box should match against (ILIKE). */
   searchColumns?: string[];
+  /**
+   * Rows this screen may show AT ALL — e.g. hiding seed accounts:
+   * `[{ "column": "email", "op": "ne", "value": "admin+test@example.com" }]`.
+   *
+   * This is a baseline the operator cannot clear, so the runtime reports how many
+   * rows it removed rather than quietly showing a short list. It is a tidiness
+   * tool, NOT a security boundary — anything that must not be readable belongs in
+   * roles and permissions, not in a file that ships to the client.
+   */
+  filter?: FilterInput;
 }
+
+/* ------------------------------- filters ------------------------------- */
+
+/**
+ * A predicate — the one shape behind every way this system narrows a list.
+ *
+ * The same structure serves four callers that look unrelated in the UI: the
+ * baseline filter on a view, the restriction on a relation picker's options, an
+ * operator's ad-hoc filtering, and (once related lists land) the parent scope on
+ * a nested screen — "orders where customer_id = 42" is not a special feature, it
+ * is this with `op: 'eq'`.
+ *
+ * Deliberately flat and AND-only. Arbitrary boolean trees would make this a query
+ * builder, and a query builder is a worse SQL console than the SQL console.
+ */
+export type FilterScalar = string | number | boolean | null;
+
+/**
+ * Comparison operators. `contains`/`startsWith`/`endsWith` match case-insensitively
+ * against the value's text form, so they work on any column type; the ordered
+ * comparisons deliberately do NOT cast, because '9' > '500' is true as text and
+ * false as a number.
+ */
+export type FilterOp = 'eq' | 'ne' | 'lt' | 'lte' | 'gt' | 'gte' | 'contains' | 'startsWith' | 'endsWith' | 'in' | 'isNull' | 'notNull';
+
+export const FILTER_OPS: readonly FilterOp[] = [
+  'eq', 'ne', 'lt', 'lte', 'gt', 'gte', 'contains', 'startsWith', 'endsWith', 'in', 'isNull', 'notNull',
+];
+
+/** Operators that carry no value; giving them one is a mistake worth reporting. */
+export const VALUELESS_OPS: readonly FilterOp[] = ['isNull', 'notNull'];
+
+export interface Predicate {
+  /** A field key on the view being filtered (or a column, on a relation target). */
+  column: string;
+  /** Defaults to `in` for an array value, `isNull` for null, `eq` otherwise. */
+  op?: FilterOp;
+  value?: FilterScalar | FilterScalar[];
+}
+
+/**
+ * Either the explicit array, or the equality shorthand `{ archived: false }` that
+ * `relation.filter` has always used. The shorthand stays because it is the common
+ * case and it is already in published files.
+ */
+export type FilterInput = Predicate[] | Record<string, FilterScalar | FilterScalar[]>;
 
 export type Field = ColumnField | RelationField | ManyToManyField;
 
@@ -120,7 +176,7 @@ export interface RelationField extends FieldCommon {
     /** Column or "{a} {b}" template shown to the operator. Falls back to the target view's `display`. */
     display?: string;
     /** Restrict selectable rows, e.g. { "archived": false }. */
-    filter?: Record<string, string | number | boolean | null>;
+    filter?: FilterInput;
   };
   /** select for many options, radio for a handful, autocomplete for very many. */
   widget?: 'select' | 'radio' | 'autocomplete';
@@ -200,6 +256,70 @@ export function renderDisplay(template: string | undefined, row: Record<string, 
     .trim();
 }
 
+/**
+ * Both filter forms reduced to the one the SQL builder consumes.
+ *
+ * Defaulting the operator from the value's shape is what keeps the shorthand
+ * honest: `{ archived: false }` and `{ deleted_at: null }` both read naturally,
+ * and the second means "is null" rather than "= null", which in SQL matches
+ * nothing and would silently empty the screen.
+ */
+export function normalizeFilter(input: FilterInput | undefined): Predicate[] {
+  if (!input) return [];
+  const one = (column: string, op: FilterOp | undefined, value: Predicate['value']): Predicate => ({
+    column,
+    op: op ?? (Array.isArray(value) ? 'in' : value === null ? 'isNull' : 'eq'),
+    ...(value === undefined ? {} : { value }),
+  });
+  if (Array.isArray(input)) return input.map((p) => one(p.column, p.op, p.value));
+  return Object.entries(input).map(([column, value]) => one(column, undefined, value));
+}
+
+/** Structural problems in a filter — shape only; columns are checked against the catalog later. */
+export function validateFilter(input: unknown, path: string): ViewProblem[] {
+  if (input === undefined || input === null) return [];
+  const problems: ViewProblem[] = [];
+  if (typeof input !== 'object') {
+    return [{ path, message: 'filter must be an array of predicates or an object of column/value pairs' }];
+  }
+
+  const entries: { at: string; column: unknown; op: unknown; value: unknown; hasValue: boolean }[] = Array.isArray(input)
+    ? input.map((p, i) => ({
+        at: `${path}[${i}]`,
+        column: (p as Predicate)?.column,
+        op: (p as Predicate)?.op,
+        value: (p as Predicate)?.value,
+        hasValue: p !== null && typeof p === 'object' && 'value' in (p as object),
+      }))
+    : Object.entries(input as Record<string, unknown>).map(([k, v]) => ({ at: `${path}.${k}`, column: k, op: undefined, value: v, hasValue: true }));
+
+  for (const e of entries) {
+    if (typeof e.column !== 'string' || !e.column.trim()) {
+      problems.push({ path: e.at, message: 'column is required on a filter predicate' });
+      continue;
+    }
+    if (e.op !== undefined && !FILTER_OPS.includes(e.op as FilterOp)) {
+      problems.push({ path: `${e.at}.op`, message: `unknown operator "${String(e.op)}" — expected one of ${FILTER_OPS.join(', ')}` });
+      continue;
+    }
+    const op = (e.op as FilterOp) ?? (Array.isArray(e.value) ? 'in' : e.value === null ? 'isNull' : 'eq');
+    const valueless = VALUELESS_OPS.includes(op);
+    if (valueless && e.hasValue && e.value !== null) {
+      problems.push({ path: e.at, message: `${op} takes no value` });
+    }
+    if (!valueless && !e.hasValue) {
+      problems.push({ path: e.at, message: `${op} needs a value` });
+    }
+    if (op === 'in' && !Array.isArray(e.value)) {
+      problems.push({ path: e.at, message: 'in needs an array value' });
+    }
+    if (op !== 'in' && Array.isArray(e.value)) {
+      problems.push({ path: e.at, message: `${op} does not take an array — use "in"` });
+    }
+  }
+  return problems;
+}
+
 /** Column names a display template reads, so the resolver can select them. */
 export function displayColumns(template: string | undefined): string[] {
   if (!template) return [];
@@ -246,6 +366,7 @@ export function validateViewDefinition(input: unknown): { ok: true; view: ViewDe
       if (!f.relation || typeof f.relation.table !== 'string' || !f.relation.table) {
         problems.push({ path: `${at}.relation.table`, message: 'relation.table is required' });
       }
+      problems.push(...validateFilter(f.relation?.filter, `${at}.relation.filter`));
     } else if (typeof (f as ColumnField).column !== 'string' || !(f as ColumnField).column) {
       problems.push({ path: `${at}.column`, message: 'column is required' });
     }
@@ -256,6 +377,8 @@ export function validateViewDefinition(input: unknown): { ok: true; view: ViewDe
       seen.add(key);
     }
   });
+
+  problems.push(...validateFilter(v.list?.filter, 'list.filter'));
 
   return problems.length ? { ok: false, problems } : { ok: true, view: input as ViewDefinition };
 }
