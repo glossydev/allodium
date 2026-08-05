@@ -140,6 +140,25 @@ interface FieldCommon {
   required?: boolean;
   /** Where this field appears. Defaults to both. */
   in?: ('list' | 'form')[];
+  /**
+   * Whether the list may be sorted by this field. Defaults to true.
+   *
+   * Only ever set this to false. Sorting is right for most columns and the
+   * runtime cannot tell which ones it is wrong for — ordering a shipping
+   * address alphabetically is technically valid and humanly meaningless, and
+   * only a person knows that. Ignored for m2m fields, which have no column.
+   */
+  sortable?: boolean;
+  /**
+   * Whether the operator may filter on this field. Defaults to true.
+   *
+   * Set false for columns where filtering is meaningless or expensive — a jsonb
+   * blob, a long text body. This governs what the RUNTIME will accept, not just
+   * what the UI offers: a filter on a field marked false is refused rather than
+   * quietly ignored, because a filter that appears to apply and does not is
+   * worse than one that is missing.
+   */
+  filterable?: boolean;
 }
 
 /** A plain column on the view's own table. */

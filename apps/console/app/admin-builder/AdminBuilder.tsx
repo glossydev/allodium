@@ -7,7 +7,7 @@ import { fetchJson, LoadingState, ErrorBox, Modal } from '@/ui/primitives';
 import type { ClientCatalog, ClientTable } from '../content/types';
 import PreviewPane from './PreviewPane';
 import FieldRow from './FieldRow';
-import { type Draft, type DraftField, type ViewDefinition, type Field, draftToDefinition, fieldKeyOf } from './types';
+import { type Draft, type DraftField, type ViewDefinition, type Field, draftToDefinition, fieldKeyOf, fieldKind } from './types';
 
 /**
  * The Admin Builder — the console writing the artifact its own runtime consumes.
@@ -415,7 +415,13 @@ export default function AdminBuilder() {
                 <label className={`text-[10px] ${tk.muted}`}>searchable columns</label>
                 <div className="mt-1 flex flex-wrap gap-1.5">
                   {included
-                    .filter((f) => f.meta?.family === 'string')
+                    // Every field with a column is eligible, not just the text
+                    // ones. The runtime casts to ::text before matching, so a
+                    // number, a date or an enum all search fine — and a relation
+                    // searches the NAME it displays rather than the foreign key,
+                    // which is the whole point of showing a name there. Only
+                    // many-to-many is excluded: it has no column to match on.
+                    .filter((f) => fieldKind(f.field) !== 'm2m')
                     .map((f) => {
                       const key = fieldKeyOf(f.field);
                       const on = draft.searchColumns.includes(key);

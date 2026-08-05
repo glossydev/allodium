@@ -182,9 +182,117 @@ try {
   const bogus = await resolver.resolve(rel({ name: 'nope' }));
   ok('a relation filter on a missing column warns', bogus.warnings.some((w) => w.includes('name') && w.includes('customers')),
     JSON.stringify(bogus.warnings));
+
+  /* ------------------- sortable / filterable / FK reach ------------------ */
+
+  // Sorting a relation must order by the NAME on screen, not the foreign key.
+  const byCustomer = await resolver.list(rel(), { sort: 'customer_id', direction: 'asc', pageSize: 5 });
+  const labels = byCustomer.rows.map((r) => r.customer_id__label).filter((x) => x != null);
+  const sortedLabels = [...labels].sort((a, b) => String(a).localeCompare(String(b)));
+  ok('sorting a relation orders by the displayed label', JSON.stringify(labels) === JSON.stringify(sortedLabels),
+    JSON.stringify(labels.slice(0, 3)));
+
+  const byFk = await resolver.list(rel(), { sort: 'customer_id', direction: 'asc', pageSize: 200 });
+  const fkOrder = byFk.rows.map((r) => r.customer_id);
+  const fkSorted = [...fkOrder].sort((a, b) => Number(a) - Number(b));
+  ok('...which is NOT the same as ordering by the foreign key', JSON.stringify(fkOrder) !== JSON.stringify(fkSorted));
+
+  // sortable:false is honoured, and falls back rather than erroring.
+  const noSort = {
+    table: 'orders',
+    fields: [{ column: 'id' }, { column: 'total', sortable: false }],
+    list: { sort: { column: 'id', direction: 'asc' } },
+  };
+  const attempted = await resolver.list(noSort, { sort: 'total', direction: 'asc', pageSize: 5 });
+  const fellBack = attempted.rows.map((r) => r.id);
+  ok('sortable:false falls back to the default sort', JSON.stringify(fellBack) === JSON.stringify([...fellBack].sort((a, b) => Number(a) - Number(b))));
+  const resolvedFlags = await resolver.resolve(noSort);
+  ok('flags default to true', resolvedFlags.fields.find((f) => f.key === 'id').sortable === true);
+  ok('sortable:false is resolved', resolvedFlags.fields.find((f) => f.key === 'total').sortable === false);
+
+  // filterable:false REFUSES an operator filter rather than ignoring it.
+  const noFilter = { table: 'orders', fields: [{ column: 'id' }, { column: 'total', filterable: false }] };
+  let refused = false;
+  try {
+    await resolver.list(noFilter, { filters: [{ column: 'total', op: 'gt', value: 1 }] });
+  } catch (e) {
+    refused = /not filterable/.test(String(e));
+  }
+  ok('filterable:false refuses an operator filter', refused);
+
+  let refusedUnknown = false;
+  try {
+    await resolver.list(noFilter, { filters: [{ column: 'nope', op: 'eq', value: 1 }] });
+  } catch (e) {
+    refusedUnknown = /not a field/.test(String(e));
+  }
+  ok('an operator filter on an unknown field is refused', refusedUnknown);
+
+  // An operator filter that IS allowed applies, and ANDs with the baseline.
+  const opFiltered = await resolver.list(
+    { table: 'orders', list: { filter: [{ column: 'total', op: 'gt', value: 100 }] } },
+    { filters: [{ column: 'total', op: 'lt', value: 500 }], pageSize: 1 }
+  );
+  const [{ n: opN }] = await raw('select count(*)::int as n from orders where total > 100 and total < 500');
+  ok('operator filter ANDs with the baseline', opFiltered.total === opN, `${opFiltered.total} vs ${opN}`);
+
+  // Searching a relation matches the label — and the COUNT must agree with the
+  // rows, which is what forces the joins into the count query.
+  const searchRel = { ...rel(), list: { searchColumns: ['customer_id'] } };
+  const hit = await resolver.list(searchRel, { search: firstName, pageSize: 200 });
+  const [{ n: relN }] = await raw(
+    'select count(*)::int as n from orders t left join customers c on c.id = t.customer_id where c.full_name::text ilike $1',
+    ['%' + firstName + '%']
+  );
+  ok('searching a relation matches the displayed name', hit.total === relN && hit.total > 0, `${hit.total} vs ${relN}`);
+  ok('the count agrees with the rows it returned', hit.rows.length === Math.min(hit.total, 200), `${hit.rows.length} rows, total ${hit.total}`);
+  ok('every returned row really is that customer', hit.rows.every((r) => String(r.customer_id__label).includes(firstName)));
+
+  /* ------- the seam with masking: a secret is not a filter oracle ------- */
+  // Masking drops secret columns from `fields`, so the filter paths refuse them
+  // transitively rather than by their own check. That is worth pinning: it means
+  // either side could regress it alone, and gt/lt on a hash reads it out by
+  // binary search just as surely as selecting it would.
+  const secret = 'password_hash';
+  const usersView = { table: 'users' };
+  const [{ n: allUsers }] = await raw('select count(*)::int as n from users');
+
+  let refusedSecret = false;
+  try {
+    await resolver.list(usersView, { filters: [{ column: secret, op: 'gt', value: 'a' }] });
+  } catch (e) {
+    refusedSecret = /not a field|not filterable/.test(String(e));
+  }
+  ok('an operator filter on a masked column is refused', refusedSecret);
+
+  const baselineSecret = await resolver.list(
+    { table: 'users', list: { filter: [{ column: secret, op: 'gt', value: 'a' }] } },
+    { pageSize: 1 }
+  );
+  ok('a baseline filter on a masked column does not apply', baselineSecret.total === allUsers, `${baselineSecret.total} vs ${allUsers}`);
+
+  const secretWarn = await resolver.resolve({ table: 'users', fields: [{ column: 'id' }, { column: secret }] });
+  ok('naming a masked column warns', secretWarn.warnings.some((w) => w.includes(secret)));
+  ok('and it is not a field', !secretWarn.fields.some((f) => f.key === secret));
+
+  // Same direction on both: the fallback replaces the COLUMN, and direction is
+  // honoured independently, so comparing asc against the default desc proves
+  // nothing.
+  const sortedBySecret = await resolver.list(usersView, { sort: secret, direction: 'asc', pageSize: 5 });
+  const defaultOrder = await resolver.list(usersView, { direction: 'asc', pageSize: 5 });
+  ok('sorting by a masked column falls back to the default order',
+    JSON.stringify(sortedBySecret.rows.map((r) => r.id)) === JSON.stringify(defaultOrder.rows.map((r) => r.id)));
+
+  // Searching a NUMBER column: the engine casts, so it was never text-only.
+  const numSearch = await resolver.list({ table: 'orders', list: { searchColumns: ['total'] } }, { search: '5', pageSize: 1 });
+  const [{ n: numN }] = await raw("select count(*)::int as n from orders where total::text ilike '%5%'");
+  ok('a numeric column can be searched', numSearch.total === numN, `${numSearch.total} vs ${numN}`);
 } finally {
   await pool.end();
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);
-process.exit(fail ? 1 : 0);
+// exitCode rather than exit(): calling exit() with the summary still in a piped
+// stdout buffer makes Windows flush the last line twice, and a doubled
+// "50 passed" in CI output reads like the suite ran twice.
+process.exitCode = fail ? 1 : 0;

@@ -1,15 +1,22 @@
 import 'server-only';
+import { createMaskPolicy } from '@allodium/admin/server';
 
 /**
- * Secret-column masking for the console — catalog-driven flavor of the doctrine in
- * @allodium/admin: masked columns are never selected, never editable, never
- * filterable, never sortable, and never on the wire (including the SQL silo, which
- * redacts them by result-field identity).
+ * Secret-column masking for the console — masked columns are never selected, never
+ * editable, never filterable, never sortable, and never on the wire (including the SQL
+ * silo, which redacts them by result-field identity).
  *
- * Because the console discovers tables at runtime (no per-table config), masking is
- * pattern-based with overrides in both directions. The pattern errs toward masking.
+ * The pattern, the built-in exemptions and the override parsing all live in
+ * `@allodium/admin/server` now. This file is the console's BINDING of that policy: it
+ * supplies the env-var overrides and nothing else.
  *
- * Overrides are RUNTIME, not compile-time: a false positive on someone else's schema
+ * That split is deliberate. The rule was written out here and, once the view resolver
+ * needed it too, in the package — two declarations of one truth with no import between
+ * them. That is the same shape as the second local copy of `humanize`: the build stays
+ * green while the halves drift, and whichever one a reader checks, they can be wrong.
+ * `packages/admin/test/masking.mjs` is the guard for the rule itself.
+ *
+ * Overrides stay RUNTIME, not compile-time: a false positive on someone else's schema
  * must be fixable without editing TypeScript and restarting a dev tool. Set
  *   CONSOLE_MASK_EXTRA="table.col,table.col"     — always mask these
  *   CONSOLE_MASK_EXEMPT="table.col,table.col"    — never mask these
@@ -17,52 +24,26 @@ import 'server-only';
  */
 
 /**
- * Substring (not end-anchored) so `password_reset_token_hash`, `secret_key_id`, and
- * `api_key_last_used` all match. End-anchoring missed whole families of credential
- * columns, and masking is the only protection the generic path has.
+ * Thunks, not values: env is read at call time (the toolkit's convention for env-driven
+ * config) so a change takes effect on the next request in dev without a restart.
  */
-const MASK_PATTERN =
-  /(password|passwd|secret|token|_hash|hashed_|api[_-]?key|private[_-]?key|access[_-]?key|client[_-]?secret|totp|mfa|otp|salt|credential|session[_-]?id|refresh)/i;
+export const maskPolicy = createMaskPolicy({
+  extra: () => process.env.CONSOLE_MASK_EXTRA,
+  exempt: () => process.env.CONSOLE_MASK_EXEMPT,
+});
 
-/**
- * Names that trip the pattern but are structural, not secret. Kept deliberately
- * short — an entry here is a decision that a column is safe to display.
- */
-const BUILTIN_EXEMPT = new Set(['token_type', 'hash_algorithm', 'mfa_enabled', 'password_updated_at', 'secret_count']);
-
-function parseSpec(raw: string | undefined): { qualified: Set<string>; bare: Set<string> } {
-  const qualified = new Set<string>();
-  const bare = new Set<string>();
-  for (const entry of (raw ?? '').split(',').map((s) => s.trim().toLowerCase()).filter(Boolean)) {
-    if (entry.includes('.')) qualified.add(entry);
-    else bare.add(entry);
-  }
-  return { qualified, bare };
-}
-
-/**
- * Env is read at call time (the app's thunk convention) so a change takes effect on
- * the next request in dev without a restart.
- */
 export function isMaskedColumn(table: string, column: string): boolean {
-  const t = table.toLowerCase();
-  const c = column.toLowerCase();
-  const key = `${t}.${c}`;
-
-  const exempt = parseSpec(process.env.CONSOLE_MASK_EXEMPT);
-  if (exempt.qualified.has(key) || exempt.bare.has(c)) return false;
-
-  const extra = parseSpec(process.env.CONSOLE_MASK_EXTRA);
-  if (extra.qualified.has(key) || extra.bare.has(c)) return true;
-
-  if (BUILTIN_EXEMPT.has(c)) return false;
-  return MASK_PATTERN.test(c);
+  return maskPolicy.isMasked(table, column);
 }
 
 /**
  * True when a masked column blocks inserts entirely (NOT NULL, no default): the
  * generic Content path cannot supply a value it is forbidden to write. Callers
  * surface this as an explanation instead of an opaque pg NOT NULL violation.
+ *
+ * Kept here rather than imported: it reads the console catalog's own column shape,
+ * where `masked` is already resolved and `default` is the raw expression text. It
+ * re-declares no rule — it only reads the flag.
  */
 export function maskedInsertBlockers(
   columns: { name: string; masked: boolean; nullable: boolean; default: string | null }[]

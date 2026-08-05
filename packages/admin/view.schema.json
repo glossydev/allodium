@@ -134,6 +134,14 @@
         },
         "in": {
           "$ref": "#/definitions/in"
+        },
+        "sortable": {
+          "type": "boolean",
+          "description": "Whether the list may be sorted by this field. Defaults to true; only ever set false."
+        },
+        "filterable": {
+          "type": "boolean",
+          "description": "Whether the operator may filter on this field. Defaults to true; a filter on a false field is refused, not ignored."
         }
       }
     },
@@ -208,6 +216,14 @@
         },
         "in": {
           "$ref": "#/definitions/in"
+        },
+        "sortable": {
+          "type": "boolean",
+          "description": "Whether the list may be sorted by this field. Defaults to true; only ever set false."
+        },
+        "filterable": {
+          "type": "boolean",
+          "description": "Whether the operator may filter on this field. Defaults to true; a filter on a false field is refused, not ignored."
         }
       }
     },
@@ -280,6 +296,14 @@
         },
         "in": {
           "$ref": "#/definitions/in"
+        },
+        "sortable": {
+          "type": "boolean",
+          "description": "Whether the list may be sorted by this field. Defaults to true; only ever set false."
+        },
+        "filterable": {
+          "type": "boolean",
+          "description": "Whether the operator may filter on this field. Defaults to true; a filter on a false field is refused, not ignored."
         }
       }
     },

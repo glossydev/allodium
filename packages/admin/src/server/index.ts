@@ -16,3 +16,11 @@ export {
   type TableMeta,
   type ColumnMeta,
 } from './introspect.js';
+export {
+  createMaskPolicy,
+  maskedInsertBlockers,
+  MASK_PATTERN,
+  type MaskPolicy,
+  type MaskOptions,
+  type MaskSpec,
+} from './masking.js';
