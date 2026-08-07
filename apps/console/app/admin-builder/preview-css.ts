@@ -34,6 +34,29 @@ export const PREVIEW_CSS = `
 .allodium-preview [data-allodium="save"] { background: #059669; border-color: #059669; color: #fff; font-weight: 500; }
 .allodium-preview [data-allodium="delete"] { border-color: #7f1d1d; color: #fca5a5; }
 
+/* Filters. The operator's own are chips they can remove; the view's baseline is
+   a stated note with no remove control, because it has no remove behaviour —
+   styling them alike would promise something the runtime will not honour. */
+.allodium-preview [data-allodium="filters"] { display: flex; align-items: center; gap: .4rem; flex-wrap: wrap; margin-bottom: .6rem; }
+.allodium-preview [data-allodium="filter-baseline"] {
+  width: 100%; margin: 0 0 .1rem; font-size: .7rem; color: #a1a1aa;
+  border-left: 2px solid #3f3f46; padding-left: .5rem;
+}
+.allodium-preview [data-allodium="filter-chips"] { display: contents; list-style: none; margin: 0; padding: 0; }
+.allodium-preview [data-allodium="filter-chip"] {
+  display: inline-flex; align-items: center; gap: .35rem;
+  background: rgba(6,78,59,.35); border: 1px solid #065f46; border-radius: 999px;
+  padding: .1rem .25rem .1rem .55rem; font-size: .7rem; color: #d1fae5;
+}
+.allodium-preview [data-allodium="filter-remove"] {
+  background: none; border: none; padding: 0 .25rem; line-height: 1;
+  color: #6ee7b7; font-size: .8rem; border-radius: 999px;
+}
+.allodium-preview [data-allodium="filter-remove"]:hover { color: #fff; background: rgba(6,95,70,.6); }
+.allodium-preview [data-allodium="filter-draft"] { display: inline-flex; align-items: center; gap: .3rem; flex-wrap: wrap; }
+.allodium-preview [data-allodium="filter-apply"] { border-color: #059669; color: #6ee7b7; }
+.allodium-preview [data-allodium="filter-add"] { border-style: dashed; }
+
 .allodium-preview [data-allodium="table"] { width: 100%; border-collapse: collapse; font-size: .75rem; }
 .allodium-preview th { text-align: left; border-bottom: 1px solid #27272a; padding: .35rem .5rem; font-weight: 500; color: #a1a1aa; }
 .allodium-preview th button { background: none; border: none; padding: 0; color: inherit; font: inherit; }

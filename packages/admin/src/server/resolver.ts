@@ -358,8 +358,15 @@ export function createViewResolver(
     // nothing — the screen would show every row and look correct. Say so.
     const listFilter = normalizeFilter(def.list?.filter);
     for (const p of listFilter) {
-      if (!fields.some((f) => f.key === p.column && f.column)) {
+      // "customer_id__label" filters the joined name; only the base key has to
+      // be a field, and it has to be the kind of field that HAS a label.
+      const wantsLabel = p.column.endsWith('__label');
+      const baseKey = wantsLabel ? p.column.slice(0, -'__label'.length) : p.column;
+      const f = fields.find((x) => x.key === baseKey && x.column);
+      if (!f) {
         warnings.push(`list.filter names "${p.column}", which is not a column field on this view — that predicate is ignored.`);
+      } else if (wantsLabel && f.kind !== 'relation') {
+        warnings.push(`list.filter names "${p.column}", but "${baseKey}" is not a relation and has no label — that predicate is ignored.`);
       }
     }
     for (const f of fields) {
@@ -474,7 +481,11 @@ export function createViewResolver(
     const page = Math.max(1, o.page ?? 1);
     const pageSize = Math.min(200, Math.max(1, o.pageSize ?? view.list.pageSize));
 
-    /** What to compare against for a field key: a relation's label, else its column. */
+    /**
+     * What to compare against for a field key: a relation's label, else its column.
+     * Used by SEARCH and SORT, where a relation can only sensibly mean the name on
+     * screen — nobody searches for the digits of a foreign key.
+     */
     let reachesThroughJoin = false;
     const exprFor = (key: string): string | null => {
       const f = view.fields.find((x) => x.key === key && x.column);
@@ -484,15 +495,34 @@ export function createViewResolver(
       return label ?? `t.${qid(f.column!)}`;
     };
 
+    /**
+     * The same question for a FILTER, where the answer differs and has to be
+     * explicit. `customer_id` means the foreign key — that is what a bound parent
+     * scope ("this customer's orders") compares, and it takes an id. The name is
+     * addressed as `customer_id__label`, which is exactly the key the row already
+     * carries it under, so what the client sees is what the client can filter on.
+     */
+    const filterTarget = (key: string): { expr: string; field: ResolvedField } | null => {
+      const wantsLabel = key.endsWith('__label');
+      const baseKey = wantsLabel ? key.slice(0, -'__label'.length) : key;
+      const f = view.fields.find((x) => x.key === baseKey && x.column);
+      if (!f) return null;
+      if (!wantsLabel) return { expr: `t.${qid(f.column!)}`, field: f };
+      const label = labelExpr.get(baseKey);
+      if (!label) return null; // asked for a label on something with no relation
+      reachesThroughJoin = true;
+      return { expr: label, field: f };
+    };
+
     // Clauses are ANDed and built in one pass so the parameter numbers stay in
     // step: the baseline filter binds first, then the operator's, then search.
     const params: unknown[] = [];
     const clauses: string[] = [];
 
     for (const p of view.list.filter) {
-      const expr = exprFor(p.column);
-      if (!expr) continue; // resolve() already warned; don't invent a column
-      const sql = predicateSql(p, expr, params);
+      const target = filterTarget(p.column);
+      if (!target) continue; // resolve() already warned; don't invent a column
+      const sql = predicateSql(p, target.expr, params);
       if (sql) clauses.push(sql);
     }
 
@@ -500,10 +530,10 @@ export function createViewResolver(
     // request, so a field that opted out is REFUSED rather than dropped: a
     // filter that looks applied but is not would misreport the data.
     for (const p of o.filters ?? []) {
-      const field = view.fields.find((f) => f.key === p.column && f.column);
-      if (!field) throw err(`Cannot filter on "${p.column}": not a field on this view`);
-      if (!field.filterable) throw err(`Cannot filter on "${p.column}": this field is not filterable`);
-      const sql = predicateSql(p, exprFor(p.column)!, params);
+      const target = filterTarget(p.column);
+      if (!target) throw err(`Cannot filter on "${p.column}": not a field on this view`);
+      if (!target.field.filterable) throw err(`Cannot filter on "${p.column}": this field is not filterable`);
+      const sql = predicateSql(p, target.expr, params);
       if (sql) clauses.push(sql);
     }
 

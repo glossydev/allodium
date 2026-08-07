@@ -1,7 +1,9 @@
 'use client';
 
+import { useState } from 'react';
 import type { ResolvedField } from '../server/resolver.js';
-import { useAdminForm, useAdminList, type AdminClientConfig } from './hooks.js';
+import type { FilterOp } from '../view.js';
+import { useAdminForm, useAdminList, type AdminClientConfig, type UseAdminListResult } from './hooks.js';
 
 /**
  * Layer 3 — unstyled components.
@@ -333,6 +335,242 @@ export function AdminForm({
 
 /* -------------------------------- list ---------------------------------- */
 
+/**
+ * Which comparisons make sense for a field, in the order an operator reaches for
+ * them. Derived from the column's family — the catalog already knows the type, so
+ * asking a human to say "this is a number" again would be the duplication this
+ * project keeps deleting.
+ */
+function operatorsFor(field: ResolvedField): FilterOp[] {
+  const nullable: FilterOp[] = ['isNull', 'notNull'];
+  if (field.kind === 'relation') return ['contains', 'eq', 'startsWith', 'ne', ...nullable];
+  if (field.options?.length) return ['eq', 'ne', 'in', ...nullable];
+  switch (field.family) {
+    case 'number':
+      return ['eq', 'gt', 'gte', 'lt', 'lte', 'ne', ...nullable];
+    case 'date':
+    case 'datetime':
+      return ['gte', 'lte', 'eq', 'gt', 'lt', ...nullable];
+    case 'boolean':
+      return ['eq', ...nullable];
+    default:
+      return ['contains', 'eq', 'startsWith', 'endsWith', 'ne', ...nullable];
+  }
+}
+
+const OP_LABELS: Record<FilterOp, string> = {
+  eq: 'is',
+  ne: 'is not',
+  lt: 'is before / less than',
+  lte: 'is at most',
+  gt: 'is after / greater than',
+  gte: 'is at least',
+  contains: 'contains',
+  startsWith: 'starts with',
+  endsWith: 'ends with',
+  in: 'is any of',
+  isNull: 'is empty',
+  notNull: 'is not empty',
+};
+
+/**
+ * A relation filters on the NAME the row displays, not the foreign key — the
+ * operator is looking at "Ada Lovelace" and has no idea the column holds 41.
+ * That is addressed by the same key the row carries the label under.
+ */
+const filterColumnFor = (f: ResolvedField) => (f.kind === 'relation' ? `${f.key}__label` : f.key);
+const fieldKeyOfFilter = (column: string) => (column.endsWith('__label') ? column.slice(0, -'__label'.length) : column);
+
+/** The value control for one predicate, chosen from what the catalog already told us. */
+function FilterValueInput({
+  field,
+  op,
+  value,
+  onChange,
+}: {
+  field: ResolvedField;
+  op: FilterOp;
+  value: string;
+  onChange: (v: string) => void;
+}) {
+  if (op === 'isNull' || op === 'notNull') return null;
+
+  const common = {
+    'data-allodium': 'filter-value',
+    value,
+    onChange: (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) => onChange(e.target.value),
+    'aria-label': `${field.label} value`,
+  } as const;
+
+  // An enum knows its own members; offering free text there invites a filter
+  // that matches nothing and gives no clue why.
+  if (field.options?.length && op !== 'in') {
+    return (
+      <select {...common}>
+        <option value="">—</option>
+        {field.options.map((o) => (
+          <option key={String(o.value)} value={String(o.value)}>
+            {o.label}
+          </option>
+        ))}
+      </select>
+    );
+  }
+  if (field.family === 'boolean') {
+    return (
+      <select {...common}>
+        <option value="">—</option>
+        <option value="true">Yes</option>
+        <option value="false">No</option>
+      </select>
+    );
+  }
+  const type =
+    field.kind === 'relation' ? 'text' : field.family === 'number' ? 'number' : field.family === 'date' ? 'date' : field.family === 'datetime' ? 'datetime-local' : 'text';
+  return <input {...common} type={type} placeholder={op === 'in' ? 'comma, separated' : undefined} />;
+}
+
+/**
+ * The filter bar.
+ *
+ * Two kinds of restriction appear here and they are deliberately NOT
+ * interchangeable. The operator's own filters are chips they can edit and
+ * remove. The view's baseline is stated in words and has no remove control,
+ * because it cannot be removed — rendering it as a dismissible chip would be a
+ * lie about who is in charge of it. A screen that quietly hides rows and says
+ * nothing is the failure this whole project keeps designing against.
+ */
+function FilterBar({ list }: { list: UseAdminListResult }) {
+  const view = list.view!;
+  const [adding, setAdding] = useState(false);
+  const [draft, setDraft] = useState<{ column: string; op: FilterOp; value: string } | null>(null);
+
+  const filterable = view.fields.filter((f) => f.filterable && f.kind !== 'm2m' && f.in.includes('list'));
+  if (!filterable.length && !view.list.filter.length) return null;
+
+  const fieldFor = (column: string) => view.fields.find((f) => f.key === fieldKeyOfFilter(column));
+
+  const startAdding = () => {
+    const first = filterable[0];
+    if (!first) return;
+    setDraft({ column: filterColumnFor(first), op: operatorsFor(first)[0], value: '' });
+    setAdding(true);
+  };
+
+  const commit = () => {
+    if (!draft) return;
+    const valueless = draft.op === 'isNull' || draft.op === 'notNull';
+    if (!valueless && draft.value === '') return; // nothing to compare against yet
+    list.addFilter({
+      column: draft.column,
+      op: draft.op,
+      ...(valueless ? {} : { value: draft.op === 'in' ? draft.value.split(',').map((s) => s.trim()) : draft.value }),
+    });
+    setDraft(null);
+    setAdding(false);
+  };
+
+  return (
+    <div data-allodium="filters">
+      {view.list.filter.length > 0 && (
+        <p data-allodium="filter-baseline" role="note">
+          This screen always excludes some rows ({view.list.filter.length}{' '}
+          {view.list.filter.length === 1 ? 'rule' : 'rules'} set by the view).
+        </p>
+      )}
+
+      <ul data-allodium="filter-chips">
+        {list.filters.map((p, i) => {
+          const f = fieldFor(p.column);
+          const valueless = p.op === 'isNull' || p.op === 'notNull';
+          return (
+            <li key={`${p.column}-${i}`} data-allodium="filter-chip" data-field={p.column}>
+              <span data-allodium="filter-label">
+                {f?.label ?? p.column} {OP_LABELS[(p.op ?? 'eq') as FilterOp]}
+                {valueless ? '' : ` ${Array.isArray(p.value) ? p.value.join(', ') : String(p.value ?? '')}`}
+              </span>
+              <button
+                type="button"
+                data-allodium="filter-remove"
+                aria-label={`Remove filter on ${f?.label ?? p.column}`}
+                onClick={() => list.removeFilter(i)}
+              >
+                ×
+              </button>
+            </li>
+          );
+        })}
+      </ul>
+
+      {adding && draft ? (
+        <div data-allodium="filter-draft">
+          <select
+            data-allodium="filter-field"
+            aria-label="Field to filter on"
+            value={draft.column}
+            onChange={(e) => {
+              const f = fieldFor(e.target.value)!;
+              setDraft({ column: e.target.value, op: operatorsFor(f)[0], value: '' });
+            }}
+          >
+            {filterable.map((f) => (
+              <option key={f.key} value={filterColumnFor(f)}>
+                {f.label}
+              </option>
+            ))}
+          </select>
+
+          <select
+            data-allodium="filter-op"
+            aria-label="Comparison"
+            value={draft.op}
+            onChange={(e) => setDraft({ ...draft, op: e.target.value as FilterOp })}
+          >
+            {operatorsFor(fieldFor(draft.column)!).map((op) => (
+              <option key={op} value={op}>
+                {OP_LABELS[op]}
+              </option>
+            ))}
+          </select>
+
+          <FilterValueInput
+            field={fieldFor(draft.column)!}
+            op={draft.op}
+            value={draft.value}
+            onChange={(v) => setDraft({ ...draft, value: v })}
+          />
+
+          <button type="button" data-allodium="filter-apply" onClick={commit}>
+            Apply
+          </button>
+          <button
+            type="button"
+            data-allodium="filter-cancel"
+            onClick={() => {
+              setDraft(null);
+              setAdding(false);
+            }}
+          >
+            Cancel
+          </button>
+        </div>
+      ) : (
+        filterable.length > 0 && (
+          <button type="button" data-allodium="filter-add" onClick={startAdding}>
+            + Filter
+          </button>
+        )
+      )}
+
+      {list.filters.length > 1 && (
+        <button type="button" data-allodium="filter-clear" onClick={() => list.clearFilters()}>
+          Clear all
+        </button>
+      )}
+    </div>
+  );
+}
+
 export function AdminList({
   config,
   onSelect,
@@ -372,6 +610,8 @@ export function AdminList({
           </button>
         )}
       </header>
+
+      <FilterBar list={list} />
 
       <table data-allodium="table">
         <thead>

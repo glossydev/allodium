@@ -339,6 +339,57 @@ export function validateFilter(input: unknown, path: string): ViewProblem[] {
   return problems;
 }
 
+/**
+ * The URL form of a filter list, and its inverse.
+ *
+ * Filters belong in the URL — that is what makes a narrowed screen shareable and
+ * the back button work — so they need a text encoding. Encoder and decoder live
+ * here, together, used by both the browser hook and the server route: a wire
+ * format with two implementations drifts, and this file has already paid that
+ * bill twice.
+ *
+ * `column:op:value`, split on the first two colons only, so a value may contain
+ * colons (timestamps and URLs do). Valueless operators omit the third part
+ * entirely. `in` takes a comma-separated list — which means a value containing a
+ * comma cannot be expressed in a URL; pass an array to the programmatic API for
+ * that, it is not a limit of the predicate itself.
+ *
+ * Values decode as STRINGS. Postgres infers a parameter's type from the column
+ * it is compared against, so '500' against a numeric column compares as 500 —
+ * and guessing here instead would turn a text column's literal "true" into a
+ * boolean.
+ */
+export function filtersToParams(filters: Predicate[]): string[] {
+  return filters.map((p) => {
+    const op = p.op ?? (Array.isArray(p.value) ? 'in' : p.value === null ? 'isNull' : 'eq');
+    if (VALUELESS_OPS.includes(op)) return `${p.column}:${op}`;
+    const value = Array.isArray(p.value) ? p.value.map((v) => String(v)).join(',') : String(p.value ?? '');
+    return `${p.column}:${op}:${value}`;
+  });
+}
+
+/** Parse `filter` query parameters. Structural only — the resolver still checks the columns. */
+export function parseFilterParams(values: string[]): Predicate[] {
+  const out: Predicate[] = [];
+  for (const raw of values) {
+    if (!raw) continue;
+    const first = raw.indexOf(':');
+    if (first < 1) continue;
+    const column = raw.slice(0, first);
+    const rest = raw.slice(first + 1);
+    const second = rest.indexOf(':');
+    const op = (second === -1 ? rest : rest.slice(0, second)) as FilterOp;
+    if (VALUELESS_OPS.includes(op)) {
+      out.push({ column, op });
+      continue;
+    }
+    if (second === -1) continue; // an operator that needs a value but has none
+    const value = rest.slice(second + 1);
+    out.push({ column, op, value: op === 'in' ? value.split(',') : value });
+  }
+  return out;
+}
+
 /** Column names a display template reads, so the resolver can select them. */
 export function displayColumns(template: string | undefined): string[] {
   if (!template) return [];

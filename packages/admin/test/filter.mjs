@@ -15,6 +15,8 @@ import {
   normalizeFilter,
   validateFilter,
   validateViewDefinition,
+  filtersToParams,
+  parseFilterParams,
   FILTER_OPS,
 } from '../dist/view.js';
 import { createViewResolver } from '../dist/server/index.js';
@@ -68,6 +70,28 @@ console.log('filters');
     fields: [{ kind: 'relation', column: 'c', relation: { table: 'o', filter: [{ column: 'x', op: 'nope' }] } }],
   });
   ok('a bad relation.filter fails too', badRel.ok === false && badRel.problems.some((p) => p.path.includes('relation.filter')));
+}
+
+/* ------------------------- the URL wire format ------------------------ */
+{
+  const round = (preds) => parseFilterParams(filtersToParams(preds));
+  const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
+
+  ok('simple predicate round-trips', same(round([{ column: 'total', op: 'gt', value: '500' }]), [{ column: 'total', op: 'gt', value: '500' }]));
+  ok('valueless op round-trips', same(round([{ column: 'notes', op: 'isNull' }]), [{ column: 'notes', op: 'isNull' }]));
+  ok('in round-trips as a list', same(round([{ column: 'status', op: 'in', value: ['a', 'b'] }]), [{ column: 'status', op: 'in', value: ['a', 'b'] }]));
+  ok('several predicates round-trip', round([{ column: 'a', op: 'eq', value: '1' }, { column: 'b', op: 'lt', value: '2' }]).length === 2);
+
+  // The reason for splitting on only the first two colons.
+  const stamped = round([{ column: 'placed_at', op: 'gte', value: '2026-08-05T09:30:00' }]);
+  ok('a value containing colons survives', stamped[0].value === '2026-08-05T09:30:00');
+
+  // Relation labels are addressed by the key the row carries them under.
+  ok('a __label column round-trips', round([{ column: 'customer_id__label', op: 'contains', value: 'Ada' }])[0].column === 'customer_id__label');
+
+  ok('encoding omits the value for valueless ops', filtersToParams([{ column: 'notes', op: 'isNull' }])[0] === 'notes:isNull');
+  ok('garbage params are dropped, not guessed', parseFilterParams(['', 'nocolon', ':leadingcolon', 'a:eq']).length === 0);
+  ok('a bare column with no op is dropped', parseFilterParams(['total']).length === 0);
 }
 
 if (!process.env.DATABASE_URL) {
@@ -282,6 +306,50 @@ try {
   const defaultOrder = await resolver.list(usersView, { direction: 'asc', pageSize: 5 });
   ok('sorting by a masked column falls back to the default order',
     JSON.stringify(sortedBySecret.rows.map((r) => r.id)) === JSON.stringify(defaultOrder.rows.map((r) => r.id)));
+
+  /* ------------- filtering a relation: key vs key__label ------------- */
+  // The distinction that makes a bound parent scope possible later: the bare key
+  // is the FOREIGN KEY (an id), the __label suffix is the joined name.
+  const someCustomer = (await raw('select id, full_name from customers order by id limit 1'))[0];
+
+  const byId = await resolver.list(rel(), { filters: [{ column: 'customer_id', op: 'eq', value: someCustomer.id }], pageSize: 200 });
+  const [{ n: byIdN }] = await raw('select count(*)::int as n from orders where customer_id = $1', [someCustomer.id]);
+  ok('filtering a relation by its bare key compares the FOREIGN KEY', byId.total === byIdN && byId.total > 0, `${byId.total} vs ${byIdN}`);
+
+  const byLabel = await resolver.list(rel(), {
+    filters: [{ column: 'customer_id__label', op: 'eq', value: someCustomer.full_name }],
+    pageSize: 200,
+  });
+  const [{ n: byNameN }] = await raw(
+    'select count(*)::int as n from orders t join customers c on c.id = t.customer_id where c.full_name = $1',
+    [someCustomer.full_name]
+  );
+  ok('filtering by __label compares the displayed NAME', byLabel.total === byNameN, `${byLabel.total} vs ${byNameN}`);
+  ok('and the count agrees with the rows returned', byLabel.rows.length === Math.min(byLabel.total, 200));
+
+  // The two are NOT interchangeable, and the fixture proves it: names repeat, so
+  // filtering by the name someone can see catches every customer who shares it.
+  // That is right for an operator typing a name, and wrong for a nested screen
+  // scoped to ONE customer — which is why a bound parent scope uses the key.
+  const [{ n: sharing }] = await raw('select count(*)::int as n from customers where full_name = $1', [someCustomer.full_name]);
+  if (sharing > 1) {
+    ok('a shared name matches more rows than the id does', byLabel.total > byIdN, `label ${byLabel.total} vs id ${byIdN} across ${sharing} customers`);
+  }
+
+  const labelContains = await resolver.list(rel(), {
+    filters: [{ column: 'customer_id__label', op: 'contains', value: someCustomer.full_name.split(' ')[0] }],
+    pageSize: 1,
+  });
+  ok('contains works through the join', labelContains.total >= byIdN, `${labelContains.total} >= ${byIdN}`);
+
+  // __label on something with no relation is refused rather than guessed at.
+  let refusedLabel = false;
+  try {
+    await resolver.list(rel(), { filters: [{ column: 'total__label', op: 'eq', value: '1' }] });
+  } catch (e) {
+    refusedLabel = /not a field/.test(String(e));
+  }
+  ok('__label on a non-relation is refused', refusedLabel);
 
   // Searching a NUMBER column: the engine casts, so it was never text-only.
   const numSearch = await resolver.list({ table: 'orders', list: { searchColumns: ['total'] } }, { search: '5', pageSize: 1 });

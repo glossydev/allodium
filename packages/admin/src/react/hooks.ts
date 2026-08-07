@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { ResolvedField, ResolvedView } from '../server/resolver.js';
+import { type Predicate, filtersToParams } from '../view.js';
 
 /**
  * Layer 2 — data and behavior, zero markup.
@@ -22,6 +23,11 @@ export interface AdminClientConfig {
   view: string;
   /** Passed to every request (auth headers, credentials, …). */
   fetchOptions?: RequestInit;
+  /**
+   * Filters to start from — read these out of the page URL to make a narrowed
+   * list shareable. `parseFilterParams` turns the query string back into them.
+   */
+  initialFilters?: Predicate[];
 }
 
 async function request<T>(url: string, init?: RequestInit): Promise<{ ok: true; data: T } | { ok: false; error: string }> {
@@ -74,11 +80,26 @@ export interface UseAdminListResult {
   search: string;
   sort: string | null;
   direction: 'asc' | 'desc';
+  /**
+   * The operator's own filters — theirs to add, change and clear.
+   *
+   * Deliberately NOT merged with the view's baseline (`view.list.filter`): that
+   * one is authored, always applies, and cannot be cleared from here. Showing
+   * them as one list would invite a UI that lets you remove a restriction it
+   * cannot actually remove.
+   */
+  filters: Predicate[];
   loading: boolean;
   error: string | null;
   setPage(n: number): void;
   setSearch(s: string): void;
   toggleSort(column: string): void;
+  addFilter(p: Predicate): void;
+  updateFilter(index: number, p: Predicate): void;
+  removeFilter(index: number): void;
+  clearFilters(): void;
+  /** The filters as URL parameters, for pushing to the address bar. */
+  filterParams: string[];
   refresh(): void;
   /** Display value for a cell, preferring a relation's resolved label. */
   cell(row: Record<string, unknown>, field: ResolvedField): unknown;
@@ -93,9 +114,15 @@ export function useAdminList(config: AdminClientConfig): UseAdminListResult {
   const [debounced, setDebounced] = useState('');
   const [sort, setSort] = useState<string | null>(null);
   const [direction, setDirection] = useState<'asc' | 'desc'>('desc');
+  const [filters, setFilters] = useState<Predicate[]>(config.initialFilters ?? []);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [tick, setTick] = useState(0);
+
+  // Serialized here so the request effect depends on a stable string rather than
+  // an array identity that changes on every render.
+  const filterParams = useMemo(() => filtersToParams(filters), [filters]);
+  const filterKey = filterParams.join('&');
 
   useEffect(() => {
     const t = setTimeout(() => {
@@ -115,6 +142,7 @@ export function useAdminList(config: AdminClientConfig): UseAdminListResult {
       p.set('sort', sort);
       p.set('direction', direction);
     }
+    for (const f of filterParams) p.append('filter', f);
     request<{ rows: Record<string, unknown>[]; total: number }>(`${config.baseUrl}/${config.view}/list?${p}`, config.fetchOptions).then((r) => {
       if (cancelled) return;
       setLoading(false);
@@ -127,7 +155,14 @@ export function useAdminList(config: AdminClientConfig): UseAdminListResult {
     return () => {
       cancelled = true;
     };
-  }, [view, page, debounced, sort, direction, tick, config.baseUrl, config.view]);
+  }, [view, page, debounced, sort, direction, filterKey, tick, config.baseUrl, config.view]);
+
+  // Any change to the filter set puts you back on page 1 — staying on page 7 of a
+  // result set that now has two pages shows an empty table and looks like a bug.
+  const changeFilters = useCallback((next: Predicate[] | ((cur: Predicate[]) => Predicate[])) => {
+    setFilters((cur) => (typeof next === 'function' ? next(cur) : next));
+    setPage(1);
+  }, []);
 
   const toggleSort = useCallback(
     (column: string) => {
@@ -157,11 +192,17 @@ export function useAdminList(config: AdminClientConfig): UseAdminListResult {
     search,
     sort: sort ?? view?.list.sort.column ?? null,
     direction,
+    filters,
+    filterParams,
     loading,
     error: error ?? viewError,
     setPage,
     setSearch: setSearchRaw,
     toggleSort,
+    addFilter: (p: Predicate) => changeFilters((cur) => [...cur, p]),
+    updateFilter: (i: number, p: Predicate) => changeFilters((cur) => cur.map((x, n) => (n === i ? p : x))),
+    removeFilter: (i: number) => changeFilters((cur) => cur.filter((_, n) => n !== i)),
+    clearFilters: () => changeFilters([]),
     refresh: () => setTick((n) => n + 1),
     cell,
   };
