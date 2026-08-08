@@ -1,7 +1,7 @@
 import type { NextRequest } from 'next/server';
 import { parseFilterParams, validateFilter } from '@allodium/admin/view';
 import { getViewResolver } from '@/lib/admin-runtime';
-import { loadView } from '@/lib/views';
+import { loadView, loadViewForTable } from '@/lib/views';
 import { ok, bad, oops } from '@/lib/api-helpers';
 
 export const dynamic = 'force-dynamic';
@@ -16,10 +16,13 @@ export const dynamic = 'force-dynamic';
 export async function GET(request: NextRequest, ctx: { params: Promise<{ view: string }> }) {
   try {
     const { view } = await ctx.params;
-    const def = await loadView(view);
-    if (!def) return bad(`Unknown view: ${view}`, 404);
-
     const q = request.nextUrl.searchParams;
+
+    // A caller that knows its table — a related panel — resolves by table, and
+    // the name in the path is only a preference. See loadViewForTable.
+    const wantTable = q.get('table');
+    const def = wantTable ? await loadViewForTable(view, wantTable) : await loadView(view);
+    if (!def) return bad(`Unknown view: ${view}`, 404);
     const filters = parseFilterParams(q.getAll('filter'));
     const problems = validateFilter(filters, 'filter');
     if (problems.length) return bad(problems.map((p) => `${p.path}: ${p.message}`).join('; '));

@@ -44,7 +44,7 @@ export default function AdminBuilder() {
    * anyone read it — and in dev that effect runs twice, so any one-shot flag loses.
    */
   const [notice, setNotice] = useState<{ text: string; sticky?: boolean } | null>(null);
-  const [creating, setCreating] = useState(false);
+  const [creating, setCreating] = useState<{ table?: string } | null>(null);
   const [deleting, setDeleting] = useState(false);
   const [previewNonce, setPreviewNonce] = useState(0);
   const [drag, setDrag] = useState<{ from: number; over: number } | null>(null);
@@ -150,7 +150,7 @@ export default function AdminBuilder() {
   const startNew = useCallback(
     async (table: string, name: string) => {
       if (!catalog) return;
-      setCreating(false);
+      setCreating(null);
       setError(null);
       const r = await fetchJson<{ definition: ViewDefinition }>(`/api/admin-views/propose?table=${encodeURIComponent(table)}`);
       if (!r.ok) return setError(r.error);
@@ -180,8 +180,22 @@ export default function AdminBuilder() {
     return catalog.tables.flatMap((t) =>
       (t.foreignKeysOut ?? [])
         .filter((fk) => fk.refTable === draft.table)
+        // A composite primary key means no single value addresses a row, which a
+        // panel needs — in practice always a join table. Its rows are pairs of
+        // ids nobody wants to look at; what was wanted is on the other side of
+        // it, and that is already offered above as a many-to-many field. Offering
+        // it here would be offering something that cannot work.
+        .filter(() => (catalog.tables.find((x) => x.name === t.name)?.pkColumns.length ?? 1) === 1)
         .map((fk) => ({ table: t.name, column: fk.column, refColumn: fk.refColumn }))
     );
+  }, [catalog, draft?.table]);
+
+  /** Join tables that point here — excluded above, but worth explaining once. */
+  const joinTablesPointingHere = useMemo(() => {
+    if (!draft || !catalog) return [];
+    return catalog.tables
+      .filter((t) => t.pkColumns.length > 1 && (t.foreignKeysOut ?? []).some((fk) => fk.refTable === draft.table))
+      .map((t) => t.name);
   }, [catalog, draft?.table]);
   const dirty = definition ? JSON.stringify(definition) !== savedJson : false;
 
@@ -287,7 +301,7 @@ export default function AdminBuilder() {
           ))}
           {draft && !views.some((v) => v.name === draft.name) && <option value={draft.name}>{draft.name}.view.json (new)</option>}
         </select>
-        <button onClick={() => setCreating(true)} className={tk.btn2}>
+        <button onClick={() => setCreating({})} className={tk.btn2}>
           + New view
         </button>
         {notice && <span className={`text-[11px] ${tk.accent}`}>{notice.text}</span>}
@@ -477,32 +491,59 @@ export default function AdminBuilder() {
                 mentions them and there is nothing for a person to remember. */}
             <div className="mt-4 space-y-2 border-t border-zinc-800 pt-3">
               <span className="text-[10px] font-semibold uppercase tracking-wide text-zinc-500">related lists</span>
+              {joinTablesPointingHere.length > 0 && (
+                <p className={`text-[10px] ${tk.muted}`}>
+                  {joinTablesPointingHere.join(', ')} {joinTablesPointingHere.length === 1 ? 'links' : 'link'} to {draft.table} through a join
+                  table, so {joinTablesPointingHere.length === 1 ? 'it is' : 'they are'} offered as a many-to-many field above rather than a panel of
+                  id pairs.
+                </p>
+              )}
               {inboundKeys.length === 0 ? (
-                <p className={`text-[10px] ${tk.muted}`}>Nothing references {draft.table}, so there are no related rows to show.</p>
+                <p className={`text-[10px] ${tk.muted}`}>Nothing references {draft.table} directly, so there are no related rows to show.</p>
               ) : (
                 <>
                   <p className={`text-[10px] ${tk.muted}`}>
                     Rows of another table that belong to this one, shown as a panel on the record screen.
                   </p>
-                  <div className="flex flex-wrap gap-1.5">
+                  <div className="flex flex-wrap items-center gap-1.5">
                     {inboundKeys.map((k) => {
                       const on = draft.related.some((r) => r.table === k.table && r.foreignKey === k.column);
+                      // A panel works either way — with no view of its own it
+                      // renders the default screen for that table — but saying
+                      // which you will get beats finding out on the record page.
+                      const curated = (views ?? []).find((v) => v.table === k.table);
                       return (
-                        <button
-                          key={`${k.table}.${k.column}`}
-                          onClick={() =>
-                            setDraft({
-                              ...draft,
-                              related: on
-                                ? draft.related.filter((r) => !(r.table === k.table && r.foreignKey === k.column))
-                                : [...draft.related, { table: k.table, foreignKey: k.column }],
-                            })
-                          }
-                          title={`${k.table}.${k.column} → ${draft.table}.${k.refColumn}`}
-                          className={on ? tk.badgeAccent : tk.badge}
-                        >
-                          {k.table} <span className="opacity-60">via {k.column}</span>
-                        </button>
+                        <span key={`${k.table}.${k.column}`} className="inline-flex items-center gap-1">
+                          <button
+                            onClick={() =>
+                              setDraft({
+                                ...draft,
+                                related: on
+                                  ? draft.related.filter((r) => !(r.table === k.table && r.foreignKey === k.column))
+                                  : [...draft.related, { table: k.table, foreignKey: k.column }],
+                              })
+                            }
+                            title={
+                              `${k.table}.${k.column} → ${draft.table}.${k.refColumn}\n` +
+                              (curated
+                                ? `Renders with ${curated.name}.view.json.`
+                                : `No view for ${k.table} yet — the panel will show a default screen with every column. Build one to choose the columns.`)
+                            }
+                            className={on ? tk.badgeAccent : tk.badge}
+                          >
+                            {k.table} <span className="opacity-60">via {k.column}</span>
+                            {!curated && <span className="ml-1 opacity-60">· default screen</span>}
+                          </button>
+                          {!curated && (
+                            <button
+                              onClick={() => setCreating({ table: k.table })}
+                              title={`Build a view for ${k.table}`}
+                              className={`${tk.badge} px-1.5`}
+                            >
+                              + build
+                            </button>
+                          )}
+                        </span>
                       );
                     })}
                   </div>
@@ -539,13 +580,21 @@ export default function AdminBuilder() {
       ) : (
         <div className="flex flex-1 flex-col items-center justify-center gap-2">
           <p className={`text-xs ${tk.muted}`}>No admin screens yet.</p>
-          <button onClick={() => setCreating(true)} className={tk.btn}>
+          <button onClick={() => setCreating({})} className={tk.btn}>
             + Build your first admin screen
           </button>
         </div>
       )}
 
-      {creating && <NewViewModal tables={catalog.tables} existing={views.map((v) => v.name)} onClose={() => setCreating(false)} onCreate={startNew} />}
+      {creating && (
+        <NewViewModal
+          tables={catalog.tables}
+          existing={views.map((v) => v.name)}
+          initialTable={creating.table}
+          onClose={() => setCreating(null)}
+          onCreate={startNew}
+        />
+      )}
 
       {deleting && draft && (
         <Modal
@@ -582,16 +631,22 @@ export default function AdminBuilder() {
 function NewViewModal({
   tables,
   existing,
+  initialTable,
   onClose,
   onCreate,
 }: {
   tables: ClientTable[];
   existing: string[];
+  /** Preselected when opened from a related list that has no view yet. */
+  initialTable?: string;
   onClose: () => void;
   onCreate: (table: string, name: string) => void;
 }) {
-  const [table, setTable] = useState('');
-  const [name, setName] = useState('');
+  // Defaulting the NAME to the table is what keeps a panel's preferred view and
+  // the file on disk in step — the mismatch that made a panel resolve a screen
+  // about some other table.
+  const [table, setTable] = useState(initialTable ?? '');
+  const [name, setName] = useState(initialTable ?? '');
   const taken = existing.includes(name.trim());
 
   return (

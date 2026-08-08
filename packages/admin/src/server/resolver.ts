@@ -427,6 +427,18 @@ export function createViewResolver(
         warnings.push(`${at}: ${r.table} has no column "${r.foreignKey}" — the panel is dropped.`);
         continue;
       }
+      // A table whose primary key spans several columns has no single value to
+      // address a row by, which a list needs. In practice this is always a join
+      // table — and a join table's rows are not what anyone wanted to see: they
+      // wanted the records on the other side of it, which is what an m2m field
+      // shows. Better to say that than to render rows of id pairs.
+      if (target.primaryKeyColumns.length !== 1) {
+        warnings.push(
+          `${at}: ${r.table} has no single-column primary key (${target.primaryKeyColumns.join(' + ') || 'none'}), so its rows cannot be addressed — the panel is dropped. ` +
+            `It looks like a join table: to show what is linked THROUGH it, add an m2m field to this view instead.`
+        );
+        continue;
+      }
       // The inbound direction, read from the catalog: does that key really point here?
       const inbound = meta.referencedBy.find((x) => x.table === r.table && x.column === r.foreignKey);
       const references = r.references ?? inbound?.references ?? pk;

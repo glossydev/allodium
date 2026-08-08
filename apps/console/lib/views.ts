@@ -3,6 +3,7 @@ import { existsSync } from 'node:fs';
 import { mkdir, readdir, readFile, rename, unlink, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import type { ViewDefinition } from '@allodium/admin/view';
+import { pickViewForTable } from './view-for-table';
 
 /**
  * View definitions live as JSON files in the repo — committed, diffable, reviewed
@@ -85,6 +86,35 @@ export async function listViewNames(): Promise<string[]> {
  * caller turns the throw into the parser's own message, same contract as the
  * DDL preview: the actionable part of an error is the part worth keeping.
  */
+/**
+ * The definition a caller that knows its TABLE should render.
+ *
+ * Related panels address a table — `post_tags`, validated against the catalog —
+ * and carry a view name only as a preference. Those are two different
+ * namespaces: files are named by hand, tables are named by the schema, and
+ * nothing kept them in step. A file called `post_tags.view.json` containing a
+ * view of `tags` satisfied a lookup by name and then failed on the first bound
+ * filter, because the screen it rendered had no `post_id`. The name matching was
+ * never the thing that made the panel correct.
+ *
+ * So the table decides and the name only breaks ties:
+ *   1. the named file, IF it really is about this table;
+ *   2. otherwise any view over this table, preferring one named after it;
+ *   3. otherwise the implicit screen — `{ table }` — which the runtime already
+ *      resolves to every visible column. "Omission means the sensible default"
+ *      applies here too: a panel with no curated view is a plain screen, not an
+ *      error.
+ *
+ * A parse failure still throws: a file that exists and is broken is worth
+ * reporting, not silently stepping over.
+ */
+export async function loadViewForTable(name: string, table: string): Promise<ViewDefinition> {
+  const named = await loadView(name);
+  // Only read every file when the named one did not already answer it.
+  const all = named?.table === table ? [] : await loadAllViews();
+  return pickViewForTable(named, all, table);
+}
+
 export async function loadView(name: string): Promise<ViewDefinition | null> {
   if (!SAFE_NAME.test(name)) return null; // the name reaches a filesystem path
   const file = path.join(VIEWS_DIR(), `${name}.view.json`);

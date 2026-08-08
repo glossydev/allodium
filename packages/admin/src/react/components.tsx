@@ -391,6 +391,9 @@ export function AdminRelated({
         config={{
           baseUrl,
           view: related.view,
+          // The catalog-validated fact. `view` is only what someone named a file,
+          // so the server prefers a definition that is genuinely about this table.
+          table: related.table,
           fetchOptions,
           boundFilters: [{ column: related.foreignKey, op: 'eq', value: parentValue as string | number }],
         }}

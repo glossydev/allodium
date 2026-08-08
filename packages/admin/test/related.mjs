@@ -79,6 +79,20 @@ if (!process.env.DATABASE_URL) {
     const wrongWay = await resolver.resolve({ table: 'customers', related: [{ table: 'posts', foreignKey: 'author_id' }] });
     ok('a key pointing at someone ELSE is dropped', wrongWay.related.length === 0, JSON.stringify(wrongWay.related));
 
+    // A join table has a composite primary key, so nothing addresses one of its
+    // rows — and its rows are pairs of ids nobody wanted anyway. This is the
+    // case a blog hits immediately: posts ← post_tags.
+    const joinPanel = await resolver.resolve({
+      table: 'posts',
+      related: [
+        { table: 'post_tags', foreignKey: 'post_id' },
+        { table: 'comments', foreignKey: 'post_id' },
+      ],
+    });
+    ok('a join-table panel is dropped', !joinPanel.related.some((r) => r.table === 'post_tags'), JSON.stringify(joinPanel.related.map((r) => r.key)));
+    ok('...and the good panel beside it survives', joinPanel.related.some((r) => r.table === 'comments'));
+    ok('...and the warning says to use m2m instead', joinPanel.warnings.some((w) => w.includes('m2m') && w.includes('post_tags')), JSON.stringify(joinPanel.warnings));
+
     const dupe = await resolver.resolve({
       table: 'customers',
       related: [

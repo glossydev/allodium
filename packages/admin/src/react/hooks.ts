@@ -21,6 +21,15 @@ export interface AdminClientConfig {
   baseUrl: string;
   /** Which view to operate on — the key the server resolves to a definition. */
   view: string;
+  /**
+   * The table this screen must be about, when the caller knows it.
+   *
+   * A related panel does: its table came from the catalog, while `view` is only
+   * the name someone gave a file. Sending it lets the server prefer a definition
+   * that genuinely covers the table over one that merely shares its filename —
+   * and fall back to a default screen when no view exists yet, rather than 404.
+   */
+  table?: string;
   /** Passed to every request (auth headers, credentials, …). */
   fetchOptions?: RequestInit;
   /**
@@ -67,7 +76,8 @@ export function useAdminView(config: AdminClientConfig) {
 
   useEffect(() => {
     let cancelled = false;
-    request<ResolvedView>(`${config.baseUrl}/${config.view}/view`, config.fetchOptions).then((r) => {
+    const q = config.table ? `?table=${encodeURIComponent(config.table)}` : '';
+    request<ResolvedView>(`${config.baseUrl}/${config.view}/view${q}`, config.fetchOptions).then((r) => {
       if (cancelled) return;
       if (r.ok) setView(r.data);
       else setError(r.error);
@@ -75,7 +85,7 @@ export function useAdminView(config: AdminClientConfig) {
     return () => {
       cancelled = true;
     };
-  }, [config.baseUrl, config.view]);
+  }, [config.baseUrl, config.view, config.table]);
 
   return { view, error, loading: !view && !error };
 }
@@ -152,6 +162,9 @@ export function useAdminList(config: AdminClientConfig): UseAdminListResult {
     let cancelled = false;
     setLoading(true);
     const p = new URLSearchParams({ page: String(page) });
+    // Must match what useAdminView asked for, or the columns and the rows would
+    // come from two different definitions.
+    if (config.table) p.set('table', config.table);
     if (debounced) p.set('search', debounced);
     if (sort) {
       p.set('sort', sort);
@@ -172,7 +185,7 @@ export function useAdminList(config: AdminClientConfig): UseAdminListResult {
     return () => {
       cancelled = true;
     };
-  }, [view, page, debounced, sort, direction, filterKey, tick, config.baseUrl, config.view, boundParams, filterParams]);
+  }, [view, page, debounced, sort, direction, filterKey, tick, config.baseUrl, config.view, config.table, boundParams, filterParams]);
 
   // Any change to the filter set puts you back on page 1 — staying on page 7 of a
   // result set that now has two pages shows an empty table and looks like a bug.
