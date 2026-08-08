@@ -118,6 +118,7 @@ export default function AdminBuilder() {
         listColumns: definition.list?.columns ?? [],
         pageSize: definition.list?.pageSize ?? 25,
         searchColumns: definition.list?.searchColumns ?? [],
+        related: definition.related ?? [],
         implicitFields,
         source: definition,
       };
@@ -164,6 +165,24 @@ export default function AdminBuilder() {
   );
 
   const definition = useMemo(() => (draft ? draftToDefinition(draft) : null), [draft]);
+
+  /**
+   * Foreign keys pointing AT this table, read out of the catalog the console
+   * already holds — every other table's outbound keys, filtered to the ones that
+   * land here. No new request, and no list for anyone to maintain: add a table
+   * with a key to this one and it shows up as a candidate by itself.
+   *
+   * Declared with the other hooks, ABOVE the loading and error returns below —
+   * a hook after a conditional return changes the hook order between renders.
+   */
+  const inboundKeys = useMemo(() => {
+    if (!draft || !catalog) return [];
+    return catalog.tables.flatMap((t) =>
+      (t.foreignKeysOut ?? [])
+        .filter((fk) => fk.refTable === draft.table)
+        .map((fk) => ({ table: t.name, column: fk.column, refColumn: fk.refColumn }))
+    );
+  }, [catalog, draft?.table]);
   const dirty = definition ? JSON.stringify(definition) !== savedJson : false;
 
   const save = async () => {
@@ -451,6 +470,44 @@ export default function AdminBuilder() {
                   className={`${tk.input} w-20`}
                 />
               </div>
+            </div>
+
+            {/* Related lists. The candidates are DISCOVERED — every foreign key in
+                the catalog pointing at this table — because nothing on this table
+                mentions them and there is nothing for a person to remember. */}
+            <div className="mt-4 space-y-2 border-t border-zinc-800 pt-3">
+              <span className="text-[10px] font-semibold uppercase tracking-wide text-zinc-500">related lists</span>
+              {inboundKeys.length === 0 ? (
+                <p className={`text-[10px] ${tk.muted}`}>Nothing references {draft.table}, so there are no related rows to show.</p>
+              ) : (
+                <>
+                  <p className={`text-[10px] ${tk.muted}`}>
+                    Rows of another table that belong to this one, shown as a panel on the record screen.
+                  </p>
+                  <div className="flex flex-wrap gap-1.5">
+                    {inboundKeys.map((k) => {
+                      const on = draft.related.some((r) => r.table === k.table && r.foreignKey === k.column);
+                      return (
+                        <button
+                          key={`${k.table}.${k.column}`}
+                          onClick={() =>
+                            setDraft({
+                              ...draft,
+                              related: on
+                                ? draft.related.filter((r) => !(r.table === k.table && r.foreignKey === k.column))
+                                : [...draft.related, { table: k.table, foreignKey: k.column }],
+                            })
+                          }
+                          title={`${k.table}.${k.column} → ${draft.table}.${k.refColumn}`}
+                          className={on ? tk.badgeAccent : tk.badge}
+                        >
+                          {k.table} <span className="opacity-60">via {k.column}</span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                </>
+              )}
             </div>
 
             {/* The artifact itself — no hiding what gets written. */}

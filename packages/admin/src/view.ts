@@ -56,6 +56,45 @@ export interface ViewDefinition {
 
   /** List-screen behavior. */
   list?: ListOptions;
+
+  /**
+   * Other tables' rows that belong to this one — a customer's orders, a post's
+   * comments — shown as panels on the record screen.
+   *
+   * This is the inbound direction of a foreign key, and it is the one thing the
+   * catalog knows that a screen could never infer from its own columns: nothing
+   * on `customers` mentions `orders`. Which inbound keys are worth showing IS a
+   * human decision, which is why they are listed rather than all rendered.
+   */
+  related?: RelatedList[];
+}
+
+/**
+ * One panel of related rows.
+ *
+ * Deliberately not a `Field`: a field holds a value belonging to this record,
+ * and these are other records that point at it. They have no widget, cannot be
+ * required, and are not part of the form's value — giving them field semantics
+ * would inherit a pile of properties that mean nothing here. (An m2m field IS a
+ * field, because its membership set is genuinely part of the record you edit.)
+ */
+export interface RelatedList {
+  /** The table whose rows belong to this one. */
+  table: string;
+  /** The foreign-key column ON THAT TABLE pointing back here. */
+  foreignKey: string;
+  /** Heading. Defaults to the table name, title-cased. */
+  title?: string;
+  /**
+   * The view definition used to render the panel. Defaults to `table`, since a
+   * view is named after its table by convention — so the common case needs only
+   * the two required keys.
+   */
+  view?: string;
+  /** Column of THIS table the foreign key points at. Defaults to the primary key. */
+  references?: string;
+  /** Rows per page in the panel. Defaults to 5 — it is a panel, not a screen. */
+  pageSize?: number;
 }
 
 export interface ListOptions {

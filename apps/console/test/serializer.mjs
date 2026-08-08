@@ -56,9 +56,35 @@ const draftFor = (def) => ({
   listColumns: def.list?.columns ?? [],
   pageSize: def.list?.pageSize ?? 25,
   searchColumns: def.list?.searchColumns ?? [],
+  related: def.related ?? [],
   implicitFields: !def.fields,
   source: def,
 });
+
+/* ----------------------- related panels ---------------------------- */
+{
+  const withPanels = {
+    ...onDisk,
+    related: [
+      { table: 'orders', foreignKey: 'customer_id' },
+      { table: 'invoices', foreignKey: 'customer_id', title: 'Unpaid', view: 'invoices-unpaid', pageSize: 10 },
+    ],
+  };
+  const out = pruneDefaults(draftToDefinition(draftFor(withPanels)));
+  ok('panels survive the round trip', out.related?.length === 2);
+  ok('a bare panel keeps only what was chosen', JSON.stringify(out.related[0]) === JSON.stringify({ table: 'orders', foreignKey: 'customer_id' }));
+  ok('a customised panel keeps its overrides', out.related[1].title === 'Unpaid' && out.related[1].view === 'invoices-unpaid' && out.related[1].pageSize === 10);
+
+  // Defaults the runtime recomputes are not written back — the same rule that
+  // strips a title equal to humanize(table).
+  const defaulted = pruneDefaults({ table: 'customers', related: [{ table: 'orders', foreignKey: 'customer_id', view: 'orders', pageSize: 5 }] });
+  ok('a view equal to the table name is stripped', defaulted.related[0].view === undefined);
+  ok('a default pageSize is stripped', defaulted.related[0].pageSize === undefined);
+
+  // Removing the last panel removes the key rather than leaving [].
+  const cleared = draftToDefinition({ ...draftFor(withPanels), related: [] });
+  ok('clearing every panel drops the key', !('related' in cleared));
+}
 
 /* ------------------- the editor's half: open, save ------------------- */
 {

@@ -34,6 +34,16 @@ export const PREVIEW_CSS = `
 .allodium-preview [data-allodium="save"] { background: #059669; border-color: #059669; color: #fff; font-weight: 500; }
 .allodium-preview [data-allodium="delete"] { border-color: #7f1d1d; color: #fca5a5; }
 
+/* Related panels — rows that belong to the record above them. Set apart with a
+   rule and a quieter heading so the boundary between "this record" and "records
+   that point at it" is visible without reading anything. */
+.allodium-preview [data-allodium="related"] { margin-top: 1.5rem; border-top: 1px solid #27272a; padding-top: .9rem; }
+.allodium-preview [data-allodium="related-title"] {
+  font-size: .8rem; font-weight: 600; color: #a1a1aa; margin: 0 0 .5rem;
+  text-transform: uppercase; letter-spacing: .04em;
+}
+.allodium-preview [data-allodium="related"] [data-allodium="table"] { font-size: .7rem; }
+
 /* Filters. The operator's own are chips they can remove; the view's baseline is
    a stated note with no remove control, because it has no remove behaviour —
    styling them alike would promise something the runtime will not honour. */

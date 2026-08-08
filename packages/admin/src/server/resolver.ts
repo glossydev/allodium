@@ -52,6 +52,21 @@ export interface ResolvedField {
   source?: { table: string; value: string; display?: string; filter?: Predicate[] };
 }
 
+/** A panel of rows belonging to this record, fully specified. */
+export interface ResolvedRelated {
+  /** Stable identity for the panel — `<table>.<foreignKey>`, unique per view. */
+  key: string;
+  title: string;
+  table: string;
+  /** The view the client should render the panel with. */
+  view: string;
+  /** Foreign-key column on the related table. */
+  foreignKey: string;
+  /** Column of THIS table it points at — the value to bind the panel to. */
+  references: string;
+  pageSize: number;
+}
+
 export interface ResolvedView {
   table: string;
   title: string;
@@ -59,6 +74,8 @@ export interface ResolvedView {
   primaryKey: string;
   display?: string;
   fields: ResolvedField[];
+  /** Related-row panels, in the order they should appear. */
+  related: ResolvedRelated[];
   list: { columns: string[]; pageSize: number; sort: { column: string; direction: 'asc' | 'desc' }; searchColumns: string[]; filter: Predicate[] };
   /**
    * Definitions that resolve but would render something useless — a select with no
@@ -392,6 +409,57 @@ export function createViewResolver(
       return false;
     });
 
+    // Related panels are checked against the catalog, not taken on trust: the
+    // whole point is that the database already knows which keys point here, so a
+    // definition naming one that does not is a mistake the runtime can see. An
+    // unchecked panel would render as an empty list, which reads as "no orders"
+    // rather than "this view is wrong".
+    const related: ResolvedRelated[] = [];
+    for (const r of def.related ?? []) {
+      const at = `related[${related.length}] (${r.table}.${r.foreignKey})`;
+      const target = await introspector.table(r.table);
+      if (!target) {
+        warnings.push(`${at} names a table that does not exist — the panel is dropped.`);
+        continue;
+      }
+      const fkCol = target.columns.find((c) => c.name === r.foreignKey);
+      if (!fkCol) {
+        warnings.push(`${at}: ${r.table} has no column "${r.foreignKey}" — the panel is dropped.`);
+        continue;
+      }
+      // The inbound direction, read from the catalog: does that key really point here?
+      const inbound = meta.referencedBy.find((x) => x.table === r.table && x.column === r.foreignKey);
+      const references = r.references ?? inbound?.references ?? pk;
+      if (!inbound) {
+        warnings.push(
+          `${at}: ${r.table}.${r.foreignKey} is not a foreign key to ${meta.name} — the panel is dropped. ` +
+            `Keys that do point here: ${meta.referencedBy.map((x) => `${x.table}.${x.column}`).join(', ') || 'none'}.`
+        );
+        continue;
+      }
+      if (!meta.columns.some((c) => c.name === references)) {
+        warnings.push(`${at}: this view's table has no column "${references}" to bind the panel to — dropped.`);
+        continue;
+      }
+      // Binding the panel means filtering the related view by its foreign key, so
+      // that key has to be filterable over there. Saying so here beats a 400 from
+      // a panel the operator cannot see the request for.
+      related.push({
+        key: `${r.table}.${r.foreignKey}`,
+        title: r.title ?? humanize(r.table),
+        table: r.table,
+        view: r.view ?? r.table,
+        foreignKey: r.foreignKey,
+        references,
+        pageSize: r.pageSize ?? 5,
+      });
+    }
+    const seenRelated = new Set<string>();
+    for (const r of related) {
+      if (seenRelated.has(r.key)) warnings.push(`related lists "${r.key}" twice — the second panel is a duplicate.`);
+      seenRelated.add(r.key);
+    }
+
     return {
       table: def.table,
       title: def.title ?? humanize(def.table),
@@ -401,6 +469,7 @@ export function createViewResolver(
       primaryKey: pk,
       display: def.display,
       fields,
+      related,
       warnings,
       list: {
         columns: def.list?.columns ?? listable.slice(0, 6).map((f) => f.key),

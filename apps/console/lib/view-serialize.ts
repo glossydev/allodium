@@ -25,7 +25,7 @@ import { humanize } from '@allodium/admin/view';
  */
 
 /** Keys this module writes explicitly; anything else is carried through verbatim. */
-const KNOWN_ROOT = new Set(['$schema', 'table', 'title', 'description', 'display', 'primaryKey', 'fields', 'list']);
+const KNOWN_ROOT = new Set(['$schema', 'table', 'title', 'description', 'display', 'primaryKey', 'fields', 'list', 'related']);
 const KNOWN_LIST = new Set(['columns', 'pageSize', 'sort', 'searchColumns']);
 const KNOWN_FIELD = new Set([
   'kind', 'name', 'column', 'relation', 'through', 'near', 'far', 'farTable', 'farValue',
@@ -102,6 +102,20 @@ export function pruneDefaults(def: ViewDefinition): ViewDefinition {
       carryUnknown(f as unknown as Record<string, unknown>, KNOWN_FIELD, clean);
       return clean as unknown as Field;
     });
+  }
+
+  // Panels record only what a human chose. `view`, `title`, `references` and
+  // `pageSize` all have defaults the runtime recomputes, so writing them back
+  // would restate the schema — the thing this function exists to avoid.
+  if (def.related?.length) {
+    out.related = def.related.map((r) => ({
+      table: r.table,
+      foreignKey: r.foreignKey,
+      ...(r.title ? { title: r.title } : {}),
+      ...(r.view && r.view !== r.table ? { view: r.view } : {}),
+      ...(r.references ? { references: r.references } : {}),
+      ...(r.pageSize && r.pageSize !== 5 ? { pageSize: r.pageSize } : {}),
+    }));
   }
 
   if (def.list) {

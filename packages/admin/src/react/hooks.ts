@@ -28,6 +28,18 @@ export interface AdminClientConfig {
    * list shareable. `parseFilterParams` turns the query string back into them.
    */
   initialFilters?: Predicate[];
+  /**
+   * The scope this list exists inside — "the orders OF THIS CUSTOMER".
+   *
+   * Applied to every request and deliberately kept out of `filters`, so no UI can
+   * render it as a removable chip. Clearing it would not narrow the screen, it
+   * would change what the screen IS.
+   *
+   * It is a scope, NOT an authorization boundary: it travels as a query parameter
+   * and a caller can send whatever they like. What a user may read is the
+   * permission layer's job, and always was.
+   */
+  boundFilters?: Predicate[];
 }
 
 async function request<T>(url: string, init?: RequestInit): Promise<{ ok: true; data: T } | { ok: false; error: string }> {
@@ -120,9 +132,12 @@ export function useAdminList(config: AdminClientConfig): UseAdminListResult {
   const [tick, setTick] = useState(0);
 
   // Serialized here so the request effect depends on a stable string rather than
-  // an array identity that changes on every render.
+  // an array identity that changes on every render. The bound scope is encoded
+  // separately: it belongs in the request but never in the operator's chips, and
+  // a caller that re-creates the array each render must not re-fetch forever.
   const filterParams = useMemo(() => filtersToParams(filters), [filters]);
-  const filterKey = filterParams.join('&');
+  const boundParams = useMemo(() => filtersToParams(config.boundFilters ?? []), [JSON.stringify(config.boundFilters ?? [])]);
+  const filterKey = [...boundParams, ...filterParams].join('&');
 
   useEffect(() => {
     const t = setTimeout(() => {
@@ -142,6 +157,8 @@ export function useAdminList(config: AdminClientConfig): UseAdminListResult {
       p.set('sort', sort);
       p.set('direction', direction);
     }
+    // Scope first, then the operator's own — ANDed server-side either way.
+    for (const f of boundParams) p.append('filter', f);
     for (const f of filterParams) p.append('filter', f);
     request<{ rows: Record<string, unknown>[]; total: number }>(`${config.baseUrl}/${config.view}/list?${p}`, config.fetchOptions).then((r) => {
       if (cancelled) return;
@@ -155,7 +172,7 @@ export function useAdminList(config: AdminClientConfig): UseAdminListResult {
     return () => {
       cancelled = true;
     };
-  }, [view, page, debounced, sort, direction, filterKey, tick, config.baseUrl, config.view]);
+  }, [view, page, debounced, sort, direction, filterKey, tick, config.baseUrl, config.view, boundParams, filterParams]);
 
   // Any change to the filter set puts you back on page 1 — staying on page 7 of a
   // result set that now has two pages shows an empty table and looks like a bug.

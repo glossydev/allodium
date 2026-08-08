@@ -7,5 +7,5 @@
  */
 
 export { useAdminView, useAdminList, useAdminForm, type AdminClientConfig, type UseAdminListResult, type UseAdminFormResult } from './hooks.js';
-export { AdminForm, AdminList } from './components.js';
-export type { ResolvedView, ResolvedField } from '../server/resolver.js';
+export { AdminForm, AdminList, AdminRelated } from './components.js';
+export type { ResolvedView, ResolvedField, ResolvedRelated } from '../server/resolver.js';

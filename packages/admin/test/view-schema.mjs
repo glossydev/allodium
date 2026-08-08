@@ -79,6 +79,7 @@ console.log('view.schema.json ↔ src/view.ts');
 
 comparePropsg('ViewDefinition', propsOf('ViewDefinition'), SCHEMA);
 comparePropsg('ListOptions', propsOf('ListOptions'), SCHEMA.definitions.list);
+comparePropsg('RelatedList', propsOf('RelatedList'), SCHEMA.definitions.relatedList);
 
 /* ------------------------------ the fields ---------------------------- */
 
@@ -127,9 +128,10 @@ check(
 
 check("root requires 'table'", JSON.stringify(SCHEMA.required) === '["table"]');
 check('root rejects unknown keys', SCHEMA.additionalProperties === false);
-for (const v of ['columnField', 'relationField', 'm2mField', 'list']) {
+for (const v of ['columnField', 'relationField', 'm2mField', 'list', 'relatedList']) {
   check(`${v} rejects unknown keys`, SCHEMA.definitions[v].additionalProperties === false);
 }
+check("relatedList requires table + foreignKey", JSON.stringify(SCHEMA.definitions.relatedList.required) === '["table","foreignKey"]');
 check('field is a 3-branch oneOf', SCHEMA.definitions.field.oneOf?.length === 3);
 check(
   'relation/m2m are discriminated by a const kind',

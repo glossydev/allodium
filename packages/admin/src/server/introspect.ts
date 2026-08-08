@@ -37,6 +37,15 @@ export interface TableMeta {
   columns: ColumnMeta[];
   primaryKey: string | null;
   primaryKeyColumns: string[];
+  /**
+   * Foreign keys pointing AT this table — the inbound direction, "what has rows
+   * that belong to mine". `columns[].fk` only answers the outbound question, so
+   * a customer could see which user it belongs to but never that orders exist.
+   *
+   * Single-column keys only: a composite foreign key is one relationship, and
+   * unnesting it would report a fake pair of them.
+   */
+  referencedBy: { table: string; column: string; references: string }[];
 }
 
 const qid = (n: string) => '"' + n.replaceAll('"', '""') + '"';
@@ -140,7 +149,7 @@ export function createIntrospector(db: Queryable, opts: { schema?: string; ttlMs
       const hit = tableCache.get(name);
       if (hit && Date.now() - hit.at < ttl) return hit.value;
 
-      const [colsRes, pkRes, fkRes, enums, tblRes] = await Promise.all([
+      const [colsRes, pkRes, fkRes, enums, tblRes, inboundRes] = await Promise.all([
         db.query(
           `select c.column_name, c.udt_name, c.data_type, c.is_nullable, c.column_default,
                   c.character_maximum_length, c.numeric_precision, c.numeric_scale,
@@ -181,6 +190,23 @@ export function createIntrospector(db: Queryable, opts: { schema?: string; ttlMs
             where n.nspname = $1 and c.relname = $2`,
           [schema, name]
         ),
+        // The same catalog, read the other way round: constraints whose TARGET
+        // is this table. A self-reference is a legitimate answer here (a post's
+        // child posts), so it is not filtered out.
+        db.query(
+          `select c.relname as src_table, a.attname as src_column, af.attname as ref_column
+             from pg_constraint con
+             join pg_class c on c.oid = con.conrelid
+             join pg_class cf on cf.oid = con.confrelid
+             join pg_namespace nf on nf.oid = cf.relnamespace
+             cross join lateral unnest(con.conkey, con.confkey) with ordinality k(attnum, fattnum, ord)
+             join pg_attribute a on a.attrelid = con.conrelid and a.attnum = k.attnum
+             join pg_attribute af on af.attrelid = con.confrelid and af.attnum = k.fattnum
+            where con.contype = 'f' and nf.nspname = $1 and cf.relname = $2
+              and array_length(con.conkey, 1) = 1
+            order by 1, 2`,
+          [schema, name]
+        ),
       ]);
 
       const raw = colsRes.rows as RawColumn[];
@@ -217,6 +243,11 @@ export function createIntrospector(db: Queryable, opts: { schema?: string; ttlMs
         columns,
         primaryKey: pkCols.length === 1 ? pkCols[0] : null,
         primaryKeyColumns: pkCols,
+        referencedBy: (inboundRes.rows as { src_table: string; src_column: string; ref_column: string }[]).map((r) => ({
+          table: r.src_table,
+          column: r.src_column,
+          references: r.ref_column,
+        })),
       };
       tableCache.set(name, { at: Date.now(), value: meta });
       return meta;

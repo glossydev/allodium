@@ -1,7 +1,7 @@
 'use client';
 
 import { useState } from 'react';
-import type { ResolvedField } from '../server/resolver.js';
+import type { ResolvedField, ResolvedRelated } from '../server/resolver.js';
 import type { FilterOp } from '../view.js';
 import { useAdminForm, useAdminList, type AdminClientConfig, type UseAdminListResult } from './hooks.js';
 
@@ -236,6 +236,7 @@ export function AdminForm({
   const formFields = view.fields.filter((f) => f.in.includes('form'));
 
   return (
+    <>
     <form
       data-allodium="form"
       data-view={view.table}
@@ -330,10 +331,73 @@ export function AdminForm({
         )}
       </footer>
     </form>
+
+    {/* Outside the <form>, not inside it: a panel contains its own controls, and
+        nesting interactive lists in the form that edits the parent record makes
+        every stray Enter keypress ambiguous. */}
+    {view.related.map((r) => (
+      <AdminRelated
+        key={r.key}
+        baseUrl={config.baseUrl}
+        related={r}
+        parentValue={values[r.references]}
+        fetchOptions={config.fetchOptions}
+      />
+    ))}
+    </>
   );
 }
 
 /* -------------------------------- list ---------------------------------- */
+
+/**
+ * One panel of rows that belong to the record on screen.
+ *
+ * There is no new fetching machinery here on purpose. A related list IS a list
+ * with a bound scope — "orders where customer_id = 41" — so it renders the same
+ * component against the same endpoint, and everything the list already does
+ * (sorting, searching, the operator's own filters, pagination) keeps working
+ * inside the panel. That the feature needed no new query path is the payoff for
+ * having made the scope a predicate rather than a special case.
+ */
+export function AdminRelated({
+  baseUrl,
+  related,
+  parentValue,
+  fetchOptions,
+  onSelect,
+}: {
+  baseUrl: string;
+  related: ResolvedRelated;
+  /** The value of the parent row's referenced column — usually its id. */
+  parentValue: unknown;
+  fetchOptions?: RequestInit;
+  onSelect?: (id: unknown, row: Record<string, unknown>) => void;
+}) {
+  // Nothing to scope by yet: a record that has not been saved has no id, and an
+  // unbound panel would list EVERY row of the related table under a heading
+  // claiming they belong to this one.
+  if (parentValue === null || parentValue === undefined || parentValue === '') return null;
+
+  return (
+    <section data-allodium="related" data-related={related.key}>
+      <h2 data-allodium="related-title">{related.title}</h2>
+      <AdminList
+        title={null}
+        onSelect={onSelect}
+        // The column every row shares is the one that put them in this panel.
+        // Repeating "Elise Moreau" down a list headed by Elise Moreau is noise.
+        hideColumns={[related.foreignKey]}
+        config={{
+          baseUrl,
+          view: related.view,
+          fetchOptions,
+          boundFilters: [{ column: related.foreignKey, op: 'eq', value: parentValue as string | number }],
+        }}
+      />
+    </section>
+  );
+}
 
 /**
  * Which comparisons make sense for a field, in the order an operator reaches for
@@ -575,10 +639,16 @@ export function AdminList({
   config,
   onSelect,
   onNew,
+  title,
+  hideColumns,
 }: {
   config: AdminClientConfig;
   onSelect?: (id: unknown, row: Record<string, unknown>) => void;
   onNew?: () => void;
+  /** Override the heading; `null` omits it, for a panel that supplies its own. */
+  title?: string | null;
+  /** Columns to drop from this rendering — not from the view. */
+  hideColumns?: string[];
 }) {
   const list = useAdminList(config);
   const { view, rows, total, page, pageCount, loading, error } = list;
@@ -588,12 +658,13 @@ export function AdminList({
 
   const columns = view.list.columns
     .map((key) => view.fields.find((f) => f.key === key))
-    .filter((f): f is ResolvedField => !!f);
+    .filter((f): f is ResolvedField => !!f)
+    .filter((f) => !hideColumns?.includes(f.key));
 
   return (
     <div data-allodium="list" data-view={view.table}>
       <header data-allodium="list-header">
-        <h1>{view.title}</h1>
+        {title !== null && <h1>{title ?? view.title}</h1>}
         {view.list.searchColumns.length > 0 && (
           <input
             type="search"

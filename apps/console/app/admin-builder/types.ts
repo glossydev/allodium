@@ -1,6 +1,6 @@
-import type { ViewDefinition, Field, ColumnField, RelationField, ManyToManyField } from '@allodium/admin/view';
+import type { ViewDefinition, Field, ColumnField, RelationField, ManyToManyField, RelatedList } from '@allodium/admin/view';
 
-export type { ViewDefinition, Field, ColumnField, RelationField, ManyToManyField };
+export type { ViewDefinition, Field, ColumnField, RelationField, ManyToManyField, RelatedList };
 
 /**
  * The builder's working shape.
@@ -29,6 +29,8 @@ export interface Draft {
   listColumns: string[];
   pageSize: number;
   searchColumns: string[];
+  /** Panels of rows belonging to this record — see RelatedList in the contract. */
+  related: RelatedList[];
   /**
    * The file on disk has no `fields` key, which the runtime reads as "every
    * visible column, including ones added later". Tracked so the editor can say
@@ -94,6 +96,12 @@ export function draftToDefinition(d: Draft): ViewDefinition {
   // A sort or filter naming a field that has just been removed would resolve to
   // a warning on every render, so drop those the same way list.columns are.
   if (list.sort && !included.has(list.sort.column)) delete list.sort;
+
+  // `related` is modelled by the editor now, so the editor owns it: an empty set
+  // means the key is gone, not that a previous value should be carried over.
+  const related = d.related ?? [];
+  if (related.length) def.related = related;
+  else delete def.related;
 
   const editorKeysEmpty = !list.columns.length && !list.searchColumns.length && list.pageSize === 25;
   const carriedKeys = Object.keys(list).filter((k) => !['columns', 'pageSize', 'searchColumns'].includes(k));

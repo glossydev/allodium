@@ -48,6 +48,13 @@
     },
     "list": {
       "$ref": "#/definitions/list"
+    },
+    "related": {
+      "type": "array",
+      "items": {
+        "$ref": "#/definitions/relatedList"
+      },
+      "description": "Panels of related rows shown on the record screen."
     }
   },
   "definitions": {
@@ -471,6 +478,42 @@
           }
         }
       ]
+    },
+    "relatedList": {
+      "type": "object",
+      "required": [
+        "table",
+        "foreignKey"
+      ],
+      "additionalProperties": false,
+      "description": "Rows of another table that belong to this one — the inbound direction of a foreign key.",
+      "properties": {
+        "table": {
+          "type": "string",
+          "description": "The table whose rows belong to this one."
+        },
+        "foreignKey": {
+          "type": "string",
+          "description": "The foreign-key column ON THAT TABLE pointing back here."
+        },
+        "title": {
+          "type": "string",
+          "description": "Heading. Defaults to the table name, title-cased."
+        },
+        "view": {
+          "type": "string",
+          "description": "View used to render the panel. Defaults to the table name."
+        },
+        "references": {
+          "type": "string",
+          "description": "Column of THIS table the foreign key points at. Defaults to the primary key."
+        },
+        "pageSize": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Rows per page in the panel. Defaults to 5."
+        }
+      }
     }
   }
 }
