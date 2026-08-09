@@ -511,7 +511,12 @@ export default function AdminBuilder() {
                       // A panel works either way — with no view of its own it
                       // renders the default screen for that table — but saying
                       // which you will get beats finding out on the record page.
-                      const curated = (views ?? []).find((v) => v.table === k.table);
+                      // Every view that covers this table, not just one named
+                      // after it: a table can have several screens, and which one
+                      // a panel uses is a decision worth offering.
+                      const covering = (views ?? []).filter((v) => v.table === k.table);
+                      const curated = covering.find((v) => v.name === k.table) ?? covering[0];
+                      const entry = draft.related.find((r) => r.table === k.table && r.foreignKey === k.column);
                       return (
                         <span key={`${k.table}.${k.column}`} className="inline-flex items-center gap-1">
                           <button
@@ -542,6 +547,31 @@ export default function AdminBuilder() {
                             >
                               + build
                             </button>
+                          )}
+                          {/* More than one screen exists for this table, so which
+                              one the panel renders is a choice, not a lookup. */}
+                          {on && covering.length > 1 && (
+                            <select
+                              aria-label={`View used for the ${k.table} panel`}
+                              title={`Which ${k.table} screen this panel renders`}
+                              value={entry?.view ?? curated?.name ?? k.table}
+                              onChange={(e) =>
+                                setDraft({
+                                  ...draft,
+                                  related: draft.related.map((r) =>
+                                    r.table === k.table && r.foreignKey === k.column ? { ...r, view: e.target.value } : r
+                                  ),
+                                })
+                              }
+                              className={`${tk.input} py-0 text-[10px]`}
+                            >
+                              {covering.map((v) => (
+                                <option key={v.name} value={v.name}>
+                                  {v.name}
+                                  {v.name === k.table ? ' (default)' : ''}
+                                </option>
+                              ))}
+                            </select>
                           )}
                         </span>
                       );
