@@ -89,9 +89,10 @@ if (!process.env.DATABASE_URL) {
         { table: 'comments', foreignKey: 'post_id' },
       ],
     });
-    ok('a join-table panel is dropped', !joinPanel.related.some((r) => r.table === 'post_tags'), JSON.stringify(joinPanel.related.map((r) => r.key)));
-    ok('...and the good panel beside it survives', joinPanel.related.some((r) => r.table === 'comments'));
-    ok('...and the warning says to use m2m instead', joinPanel.warnings.some((w) => w.includes('m2m') && w.includes('post_tags')), JSON.stringify(joinPanel.warnings));
+    // Both are kept now: a composite key costs the record screen, not the list.
+    ok('a join-table panel is kept', joinPanel.related.some((r) => r.table === 'post_tags'), JSON.stringify(joinPanel.related.map((r) => r.key)));
+    ok('...alongside the ordinary one', joinPanel.related.some((r) => r.table === 'comments'));
+    ok('...and neither warns', joinPanel.warnings.length === 0, JSON.stringify(joinPanel.warnings));
 
     const dupe = await resolver.resolve({
       table: 'customers',
@@ -117,6 +118,67 @@ if (!process.env.DATABASE_URL) {
       const empty = await resolver.list({ table: 'orders' }, { filters: [{ column: 'customer_id', op: 'eq', value: orphan.id }] });
       ok('a parent with no children gets an empty panel', empty.total === 0, `${empty.total}`);
     }
+
+    /* ------------ join tables: listable, just not addressable ---------- */
+    const jt = await resolver.resolve({ table: 'post_tags' });
+    ok('a composite-key table resolves', jt.table === 'post_tags');
+    ok('...with a null primary key', jt.primaryKey === null);
+    ok('...and still sorts by something', !!jt.list.sort.column);
+
+    const jtRows = await resolver.list({ table: 'post_tags' }, { scope: [{ column: 'post_id', op: 'eq', value: 1 }] });
+    const [{ n: jtN }] = await raw('select count(*)::int as n from post_tags where post_id = 1');
+    ok('and its rows list', jtRows.total === jtN && jtRows.total > 0, `${jtRows.total} vs ${jtN}`);
+
+    for (const [verb, call] of [
+      ['read', () => resolver.read({ table: 'post_tags' }, 1)],
+      ['update', () => resolver.update({ table: 'post_tags' }, 1, { tag_id: 2 })],
+      ['remove', () => resolver.remove({ table: 'post_tags' }, 1)],
+      ['create', () => resolver.create({ table: 'post_tags' }, { post_id: 1, tag_id: 2 })],
+    ]) {
+      let refused = false;
+      try { await call(); } catch (e) { refused = /cannot be addressed/.test(String(e)); }
+      ok(`${verb} refuses with a reason`, refused);
+    }
+
+    // The panel a blog actually wanted: a post's tags, by name.
+    const named = {
+      table: 'post_tags',
+      fields: [
+        { kind: 'relation', column: 'post_id', relation: { table: 'posts', value: 'id', display: 'title' } },
+        { kind: 'relation', column: 'tag_id', relation: { table: 'tags', value: 'id', display: 'label' } },
+      ],
+    };
+    const byName = await resolver.list(named, { scope: [{ column: 'post_id', op: 'eq', value: 1 }] });
+    const labels = byName.rows.map((r) => r.tag_id__label).sort();
+    const expected = (await raw('select t.label from post_tags pt join tags t on t.id = pt.tag_id where pt.post_id = 1 order by 1')).map((r) => r.label);
+    ok('a post\'s tags render as names', JSON.stringify(labels) === JSON.stringify(expected), JSON.stringify(labels));
+
+    // posts -> post_tags is no longer dropped.
+    const postsView = await resolver.resolve({ table: 'posts', related: [{ table: 'post_tags', foreignKey: 'post_id' }] });
+    ok('a join-table panel is now kept', postsView.related.some((r) => r.table === 'post_tags'));
+    ok('...with no warning', postsView.warnings.length === 0, JSON.stringify(postsView.warnings));
+
+    /* ---- scope is checked against the TABLE, filters against fields ---- */
+    // A curated panel view omits the key it is bound by — repeating the parent
+    // down every row is noise — and the panel must still work.
+    const curated = { table: 'post_tags', fields: [{ column: 'tag_id' }] };
+    const scoped = await resolver.list(curated, { scope: [{ column: 'post_id', op: 'eq', value: 1 }] });
+    ok('scope works on a column the view does not expose', scoped.total === jtN, `${scoped.total} vs ${jtN}`);
+
+    let filterRefused = false;
+    try { await resolver.list(curated, { filters: [{ column: 'post_id', op: 'eq', value: 1 }] }); }
+    catch (e) { filterRefused = /not a field/.test(String(e)); }
+    ok('...while an operator FILTER on it is still refused', filterRefused);
+
+    let scopeUnknown = false;
+    try { await resolver.list(curated, { scope: [{ column: 'nope', op: 'eq', value: 1 }] }); }
+    catch (e) { scopeUnknown = /no such column/.test(String(e)); }
+    ok('a scope on a non-existent column is refused', scopeUnknown);
+
+    let scopeMasked = false;
+    try { await resolver.list({ table: 'users' }, { scope: [{ column: 'password_hash', op: 'eq', value: 'x' }] }); }
+    catch (e) { scopeMasked = /masked/.test(String(e)); }
+    ok('a scope on a masked column is refused', scopeMasked);
 
     /* --------------- a self-referencing key is legitimate ------------- */
     const selfRef = (await raw(`

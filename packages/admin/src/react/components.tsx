@@ -233,6 +233,17 @@ export function AdminForm({
   if (error && !view) return <p data-allodium="error">{error}</p>;
   if (!view || loading) return <p data-allodium="loading">Loading…</p>;
 
+  // A record screen addresses one row, and some tables have nothing to address
+  // one BY — a join table's key spans columns. Say so plainly instead of
+  // rendering a form whose every save would fail.
+  if (view.primaryKey === null) {
+    return (
+      <p data-allodium="error" role="note">
+        {view.title} has no single-column primary key, so individual rows cannot be opened or edited. The list still works.
+      </p>
+    );
+  }
+
   const formFields = view.fields.filter((f) => f.in.includes('form'));
 
   return (
@@ -708,15 +719,20 @@ export function AdminList({
             </tr>
           ) : (
             rows.map((row, i) => {
-              const id = row[view.primaryKey];
+              // No primary key means no row screen to open — a join table's rows
+              // are addressed by a composite key, so there is nothing to put in a
+              // URL. The list still renders; the rows just are not links, and the
+              // React key falls back to position.
+              const id = view.primaryKey ? row[view.primaryKey] : undefined;
+              const selectable = onSelect && view.primaryKey !== null;
               return (
                 <tr
                   key={String(id ?? i)}
                   data-allodium="row"
-                  onClick={onSelect ? () => onSelect(id, row) : undefined}
-                  tabIndex={onSelect ? 0 : undefined}
+                  onClick={selectable ? () => onSelect(id, row) : undefined}
+                  tabIndex={selectable ? 0 : undefined}
                   onKeyDown={
-                    onSelect
+                    selectable
                       ? (e) => {
                           if (e.key === 'Enter' || e.key === ' ') {
                             e.preventDefault();

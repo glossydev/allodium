@@ -180,22 +180,17 @@ export default function AdminBuilder() {
     return catalog.tables.flatMap((t) =>
       (t.foreignKeysOut ?? [])
         .filter((fk) => fk.refTable === draft.table)
-        // A composite primary key means no single value addresses a row, which a
-        // panel needs — in practice always a join table. Its rows are pairs of
-        // ids nobody wants to look at; what was wanted is on the other side of
-        // it, and that is already offered above as a many-to-many field. Offering
-        // it here would be offering something that cannot work.
-        .filter(() => (catalog.tables.find((x) => x.name === t.name)?.pkColumns.length ?? 1) === 1)
-        .map((fk) => ({ table: t.name, column: fk.column, refColumn: fk.refColumn }))
+        // A composite primary key is not a reason to hide the panel: the rows
+        // list fine, they just cannot be opened. For a join table that is often
+        // the point — a user's roles WITH who granted them and when, which the
+        // m2m checkbox group cannot show.
+        .map((fk) => ({
+          table: t.name,
+          column: fk.column,
+          refColumn: fk.refColumn,
+          listOnly: (t.pkColumns?.length ?? 1) !== 1,
+        }))
     );
-  }, [catalog, draft?.table]);
-
-  /** Join tables that point here — excluded above, but worth explaining once. */
-  const joinTablesPointingHere = useMemo(() => {
-    if (!draft || !catalog) return [];
-    return catalog.tables
-      .filter((t) => t.pkColumns.length > 1 && (t.foreignKeysOut ?? []).some((fk) => fk.refTable === draft.table))
-      .map((t) => t.name);
   }, [catalog, draft?.table]);
   const dirty = definition ? JSON.stringify(definition) !== savedJson : false;
 
@@ -491,13 +486,6 @@ export default function AdminBuilder() {
                 mentions them and there is nothing for a person to remember. */}
             <div className="mt-4 space-y-2 border-t border-zinc-800 pt-3">
               <span className="text-[10px] font-semibold uppercase tracking-wide text-zinc-500">related lists</span>
-              {joinTablesPointingHere.length > 0 && (
-                <p className={`text-[10px] ${tk.muted}`}>
-                  {joinTablesPointingHere.join(', ')} {joinTablesPointingHere.length === 1 ? 'links' : 'link'} to {draft.table} through a join
-                  table, so {joinTablesPointingHere.length === 1 ? 'it is' : 'they are'} offered as a many-to-many field above rather than a panel of
-                  id pairs.
-                </p>
-              )}
               {inboundKeys.length === 0 ? (
                 <p className={`text-[10px] ${tk.muted}`}>Nothing references {draft.table} directly, so there are no related rows to show.</p>
               ) : (
@@ -532,11 +520,15 @@ export default function AdminBuilder() {
                               `${k.table}.${k.column} → ${draft.table}.${k.refColumn}\n` +
                               (curated
                                 ? `Renders with ${curated.name}.view.json.`
-                                : `No view for ${k.table} yet — the panel will show a default screen with every column. Build one to choose the columns.`)
+                                : `No view for ${k.table} yet — the panel will show a default screen with every column. Build one to choose the columns.`) +
+                              (k.listOnly
+                                ? `\n${k.table} has a composite primary key, so its rows list but cannot be opened or edited.`
+                                : '')
                             }
                             className={on ? tk.badgeAccent : tk.badge}
                           >
                             {k.table} <span className="opacity-60">via {k.column}</span>
+                            {k.listOnly && <span className="ml-1 opacity-60">· list only</span>}
                             {!curated && <span className="ml-1 opacity-60">· default screen</span>}
                           </button>
                           {!curated && (

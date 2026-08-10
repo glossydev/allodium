@@ -71,7 +71,12 @@ export interface ResolvedView {
   table: string;
   title: string;
   description: string | null;
-  primaryKey: string;
+  /**
+   * The column that addresses one row, or null when nothing does (a join table's
+   * composite key). Null means the screen is list-only: no record view, and
+   * create/update/delete refuse.
+   */
+  primaryKey: string | null;
   display?: string;
   fields: ResolvedField[];
   /** Related-row panels, in the order they should appear. */
@@ -172,7 +177,7 @@ function defaultWidget(c: ColumnMeta): string {
 
 export interface ViewResolver {
   resolve(def: ViewDefinition): Promise<ResolvedView>;
-  list(def: ViewDefinition, opts?: { page?: number; pageSize?: number; search?: string; sort?: string; direction?: 'asc' | 'desc'; filters?: Predicate[] }): Promise<ListResult>;
+  list(def: ViewDefinition, opts?: { page?: number; pageSize?: number; search?: string; sort?: string; direction?: 'asc' | 'desc'; filters?: Predicate[]; scope?: Predicate[] }): Promise<ListResult>;
   read(def: ViewDefinition, id: unknown): Promise<Record<string, unknown> | null>;
   create(def: ViewDefinition, values: Record<string, unknown>): Promise<Record<string, unknown>>;
   update(def: ViewDefinition, id: unknown, values: Record<string, unknown>): Promise<Record<string, unknown>>;
@@ -213,10 +218,25 @@ export function createViewResolver(
     return t;
   };
 
-  const pkOf = async (def: ViewDefinition, meta: TableMeta): Promise<string> => {
-    const pk = def.primaryKey ?? meta.primaryKey;
-    if (!pk) throw err(`${meta.name} has no single-column primary key; set "primaryKey" in the view`);
-    return pk;
+  /**
+   * The column that addresses one row, or null when nothing does.
+   *
+   * A composite primary key — a join table's (post_id, tag_id) — leaves no single
+   * value to put in a URL, so there is no record screen and no read, update or
+   * delete. LISTING is a different question, and it never needed a key: a panel
+   * showing a post's tags, or a user's roles with who granted them and when, is
+   * exactly the join table's rows and is worth seeing. This used to throw, which
+   * made the whole table unviewable to answer a question nobody had asked.
+   */
+  const pkOf = async (def: ViewDefinition, meta: TableMeta): Promise<string | null> =>
+    def.primaryKey ?? meta.primaryKey ?? null;
+
+  /** Reads and writes that address a single row need one; say which and why. */
+  const requirePk = (view: ResolvedView): string => {
+    if (view.primaryKey) return view.primaryKey;
+    throw err(
+      `${view.table} has no single-column primary key, so a row cannot be addressed — it can be listed, but not read, created, updated or deleted. Set "primaryKey" in the view if one column does identify a row.`
+    );
   };
 
   /**
@@ -342,7 +362,7 @@ export function createViewResolver(
     // The primary key is projected by every read (it is how a row is addressed), so a
     // masked PK cannot be served at all. Better to fail loudly than to return rows
     // with no usable identifier.
-    if (isMasked(meta.name, pk)) {
+    if (pk && isMasked(meta.name, pk)) {
       throw err(`${meta.name}.${pk} is the primary key but is masked — exempt it, or the table cannot be served.`);
     }
     for (const f of fields) {
@@ -427,18 +447,12 @@ export function createViewResolver(
         warnings.push(`${at}: ${r.table} has no column "${r.foreignKey}" — the panel is dropped.`);
         continue;
       }
-      // A table whose primary key spans several columns has no single value to
-      // address a row by, which a list needs. In practice this is always a join
-      // table — and a join table's rows are not what anyone wanted to see: they
-      // wanted the records on the other side of it, which is what an m2m field
-      // shows. Better to say that than to render rows of id pairs.
-      if (target.primaryKeyColumns.length !== 1) {
-        warnings.push(
-          `${at}: ${r.table} has no single-column primary key (${target.primaryKeyColumns.join(' + ') || 'none'}), so its rows cannot be addressed — the panel is dropped. ` +
-            `It looks like a join table: to show what is linked THROUGH it, add an m2m field to this view instead.`
-        );
-        continue;
-      }
+      // A composite primary key on the target is NOT a reason to drop the panel.
+      // It means no record screen over there, and the rows still list — which for
+      // a join table is the interesting content: a user's roles with who granted
+      // them and when, which a checkbox group cannot show. The client learns the
+      // panel is list-only from that view's primaryKey being null.
+
       // The inbound direction, read from the catalog: does that key really point here?
       const inbound = meta.referencedBy.find((x) => x.table === r.table && x.column === r.foreignKey);
       const references = r.references ?? inbound?.references ?? pk;
@@ -449,8 +463,15 @@ export function createViewResolver(
         );
         continue;
       }
-      if (!meta.columns.some((c) => c.name === references)) {
-        warnings.push(`${at}: this view's table has no column "${references}" to bind the panel to — dropped.`);
+      // The panel binds to a value on THIS row, so this table needs a column to
+      // take it from. Usually the primary key — but a view with no addressable
+      // key can still host a panel by naming `references` itself.
+      if (!references || !meta.columns.some((c) => c.name === references)) {
+        warnings.push(
+          references
+            ? `${at}: this view's table has no column "${references}" to bind the panel to — dropped.`
+            : `${at}: ${meta.name} has no single-column primary key to bind the panel to — set "references" on the panel to say which column ${r.table}.${r.foreignKey} points at. Dropped.`
+        );
         continue;
       }
       // Binding the panel means filtering the related view by its foreign key, so
@@ -486,7 +507,12 @@ export function createViewResolver(
       list: {
         columns: def.list?.columns ?? listable.slice(0, 6).map((f) => f.key),
         pageSize: def.list?.pageSize ?? 25,
-        sort: { column: def.list?.sort?.column ?? pk, direction: def.list?.sort?.direction ?? 'desc' },
+        // Without a key to order by, fall back to the first listable column —
+        // any stable order beats an unordered page, which paginates incoherently.
+        sort: {
+          column: def.list?.sort?.column ?? pk ?? listable.find((f) => f.column)?.key ?? '',
+          direction: def.list?.sort?.direction ?? 'desc',
+        },
         searchColumns,
         filter: listFilter,
       },
@@ -553,7 +579,7 @@ export function createViewResolver(
     return m;
   }
 
-  async function list(def: ViewDefinition, o: { page?: number; pageSize?: number; search?: string; sort?: string; direction?: 'asc' | 'desc'; filters?: Predicate[] } = {}): Promise<ListResult> {
+  async function list(def: ViewDefinition, o: { page?: number; pageSize?: number; search?: string; sort?: string; direction?: 'asc' | 'desc'; filters?: Predicate[]; scope?: Predicate[] } = {}): Promise<ListResult> {
     const view = await resolve(def);
     const meta = await tableOrThrow(def.table);
     const sources = await relationSources(view);
@@ -604,6 +630,20 @@ export function createViewResolver(
       const target = filterTarget(p.column);
       if (!target) continue; // resolve() already warned; don't invent a column
       const sql = predicateSql(p, target.expr, params);
+      if (sql) clauses.push(sql);
+    }
+
+    // The bound scope — "the roles OF THIS USER". Structural, not the operator's,
+    // so it is checked against the TABLE rather than the view's fields: a curated
+    // panel view legitimately omits the key it is bound by, because repeating the
+    // parent down every row is noise. Requiring it to be a field meant hiding the
+    // column broke the panel. Masked columns are still refused — scoping by a
+    // secret is the same oracle filtering by one would be.
+    for (const p of o.scope ?? []) {
+      const col = meta.columns.find((c) => c.name === p.column);
+      if (!col) throw err(`Cannot scope by "${p.column}": ${meta.name} has no such column`);
+      if (isMasked(meta.name, col.name)) throw err(`Cannot scope by "${p.column}": it is masked`);
+      const sql = predicateSql(p, `t.${qid(col.name)}`, params);
       if (sql) clauses.push(sql);
     }
 
@@ -684,7 +724,7 @@ export function createViewResolver(
     const { select, join } = selectWithLabels(view, meta, sources);
 
     const res = await db.query(
-      `select ${select} from ${qid(def.table)} t\n${join}\nwhere t.${qid(view.primaryKey)}::text = $1 limit 1`,
+      `select ${select} from ${qid(def.table)} t\n${join}\nwhere t.${qid(requirePk(view))}::text = $1 limit 1`,
       [String(id)]
     );
     const row = res.rows[0] as Record<string, unknown> | undefined;
@@ -827,7 +867,7 @@ export function createViewResolver(
           )
         : await exec.query(`insert into ${qid(def.table)} default values returning ${returning}`);
       const row = res.rows[0] as Record<string, unknown>;
-      const id = row[view.primaryKey];
+      const id = row[requirePk(view)];
       for (const l of links) await syncLinks(l, id, exec);
       return row;
     });
@@ -842,7 +882,7 @@ export function createViewResolver(
       const cols = Object.keys(own);
       if (cols.length) {
         const res = await exec.query(
-          `update ${qid(def.table)} set ${cols.map((c, i) => `${qid(c)} = $${i + 2}`).join(', ')} where ${qid(view.primaryKey)}::text = $1 returning ${returning}`,
+          `update ${qid(def.table)} set ${cols.map((c, i) => `${qid(c)} = $${i + 2}`).join(', ')} where ${qid(requirePk(view))}::text = $1 returning ${returning}`,
           [String(id), ...Object.values(own)]
         );
         row = res.rows[0] as Record<string, unknown> | undefined;
@@ -851,7 +891,7 @@ export function createViewResolver(
         // The no-op branch still returns the row, so it needs the same projection —
         // `select *` here would undo the whole guard for any update that submitted
         // only many-to-many changes.
-        const res = await exec.query(`select ${returning} from ${qid(def.table)} where ${qid(view.primaryKey)}::text = $1`, [String(id)]);
+        const res = await exec.query(`select ${returning} from ${qid(def.table)} where ${qid(requirePk(view))}::text = $1`, [String(id)]);
         row = res.rows[0] as Record<string, unknown> | undefined;
         if (!row) throw err('Row not found');
       }
@@ -862,7 +902,7 @@ export function createViewResolver(
 
   async function remove(def: ViewDefinition, id: unknown) {
     const view = await resolve(def);
-    const res = await db.query(`delete from ${qid(def.table)} where ${qid(view.primaryKey)}::text = $1`, [String(id)]);
+    const res = await db.query(`delete from ${qid(def.table)} where ${qid(requirePk(view))}::text = $1`, [String(id)]);
     if (!res.rowCount) throw err('Row not found');
   }
 

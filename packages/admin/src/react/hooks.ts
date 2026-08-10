@@ -170,8 +170,10 @@ export function useAdminList(config: AdminClientConfig): UseAdminListResult {
       p.set('sort', sort);
       p.set('direction', direction);
     }
-    // Scope first, then the operator's own — ANDed server-side either way.
-    for (const f of boundParams) p.append('filter', f);
+    // Scope travels on its own parameter, not as a filter. The server checks it
+    // against the TABLE rather than the view's fields, so a panel still works
+    // when its view omits the key it is bound by.
+    for (const f of boundParams) p.append('scope', f);
     for (const f of filterParams) p.append('filter', f);
     request<{ rows: Record<string, unknown>[]; total: number }>(`${config.baseUrl}/${config.view}/list?${p}`, config.fetchOptions).then((r) => {
       if (cancelled) return;

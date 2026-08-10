@@ -24,7 +24,8 @@ export async function GET(request: NextRequest, ctx: { params: Promise<{ view: s
     const def = wantTable ? await loadViewForTable(view, wantTable) : await loadView(view);
     if (!def) return bad(`Unknown view: ${view}`, 404);
     const filters = parseFilterParams(q.getAll('filter'));
-    const problems = validateFilter(filters, 'filter');
+    const scope = parseFilterParams(q.getAll('scope'));
+    const problems = [...validateFilter(filters, 'filter'), ...validateFilter(scope, 'scope')];
     if (problems.length) return bad(problems.map((p) => `${p.path}: ${p.message}`).join('; '));
 
     try {
@@ -35,6 +36,7 @@ export async function GET(request: NextRequest, ctx: { params: Promise<{ view: s
           sort: q.get('sort') ?? undefined,
           direction: q.get('direction') === 'asc' ? 'asc' : 'desc',
           filters,
+          scope,
         })
       );
     } catch (e) {
@@ -42,7 +44,7 @@ export async function GET(request: NextRequest, ctx: { params: Promise<{ view: s
       // not a server fault: 400 with the reason, rather than a 500 that reads
       // like the screen is broken.
       const msg = e instanceof Error ? e.message : String(e);
-      if (msg.startsWith('Cannot filter on')) return bad(msg);
+      if (msg.startsWith('Cannot filter on') || msg.startsWith('Cannot scope by')) return bad(msg);
       throw e;
     }
   } catch (e) {
