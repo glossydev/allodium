@@ -30,7 +30,7 @@ if (!process.env.DATABASE_URL) {
   process.exitCode = 0;
 } else {
   const pool = new Pool({ connectionString: process.env.DATABASE_URL, max: 3 });
-  const resolver = createViewResolver(pool);
+  const resolver = createViewResolver(pool, { access: 'unrestricted' });
   const raw = async (sql, params = []) => (await pool.query(sql, params)).rows;
 
   try {

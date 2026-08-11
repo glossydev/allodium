@@ -95,7 +95,7 @@ if (!url) {
 
 const { Pool } = await import('pg');
 const pool = new Pool({ connectionString: url });
-const resolver = createViewResolver(pool, { ttlMs: 0 });
+const resolver = createViewResolver(pool, { access: 'unrestricted', ttlMs: 0 });
 
 const SECRETS = ['password_hash', 'mfa_secret'];
 const hasSecret = (row) => SECRETS.some((s) => s in (row ?? {}));
@@ -194,18 +194,18 @@ try {
   ok('option labels do not render a masked column', !opts.some((o) => String(o.label).includes('ak_live_')));
 
   /* -- the escape hatch actually works -- */
-  const exempted = createViewResolver(pool, { ttlMs: 0, masking: { exempt: ['_mask_probe.api_key'] } });
+  const exempted = createViewResolver(pool, { access: 'unrestricted', ttlMs: 0, masking: { exempt: ['_mask_probe.api_key'] } });
   const exemptedRows = await exempted.list(probe, { pageSize: 1 });
   ok('exempt makes a column visible again', 'api_key' in exemptedRows.rows[0]);
   ok('exempt does not unmask everything', !('password_hash' in exemptedRows.rows[0]));
 
   /* -- extra config masks a column the pattern would miss -- */
-  const strict = createViewResolver(pool, { ttlMs: 0, masking: { extra: ['_mask_probe.name'] } });
+  const strict = createViewResolver(pool, { access: 'unrestricted', ttlMs: 0, masking: { extra: ['_mask_probe.name'] } });
   const strictRows = await strict.list(probe, { pageSize: 1 });
   ok('extra masks a pattern-invisible column', !('name' in strictRows.rows[0]));
 
   /* -- a masked primary key is unservable, and says so -- */
-  const pkMasked = createViewResolver(pool, { ttlMs: 0, masking: { extra: ['_mask_probe.id'] } });
+  const pkMasked = createViewResolver(pool, { access: 'unrestricted', ttlMs: 0, masking: { extra: ['_mask_probe.id'] } });
   await throws('masked primary key throws rather than serving unidentified rows', () =>
     pkMasked.resolve(probe)
   );

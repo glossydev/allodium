@@ -6,6 +6,8 @@ import {
   type ManyToManyField,
   type Predicate,
   normalizeFilter,
+  FILTER_OPS,
+  type FilterOp,
   fieldKey,
   humanize,
   isColumnField,
@@ -101,6 +103,36 @@ export interface ListResult {
 const err = (m: string) => new Error(m);
 
 /**
+ * The permission gate, as this package needs to see it.
+ *
+ * Structural rather than imported: `@allodium/auth` owns the decision, and the
+ * admin runtime must not depend on auth — the content API needs the same gate
+ * without the admin runtime. `scope` is typed wider than `Predicate` on purpose
+ * so an auth policy is assignable; the operators are checked at the boundary
+ * instead, where an unsupported one can be refused rather than dropped.
+ */
+export interface AccessPolicyLike {
+  can(
+    actor: unknown,
+    table: string,
+    action: 'create' | 'read' | 'update' | 'delete'
+  ): { allowed: boolean; scope: { column: string; op?: string; value?: unknown }[]; reason: string };
+}
+
+/**
+ * Who may do what. REQUIRED, with no default.
+ *
+ * `'unrestricted'` is the explicit opt-out, for a caller that is already the
+ * trust boundary — the developer console is loopback-pinned, unauthenticated and
+ * runs as super_admin by design. Everything else passes a policy.
+ *
+ * There is no default because the wrong default is an unauthenticated admin API
+ * over every table, and that failure is silent: it works perfectly, for everyone.
+ * A missing argument should be a compile error, not a leak.
+ */
+export type AccessConfig = AccessPolicyLike | 'unrestricted';
+
+/**
  * One predicate as a SQL fragment, with its value bound as a parameter.
  *
  * `colExpr` is already-quoted and comes from a field the caller matched against
@@ -177,11 +209,11 @@ function defaultWidget(c: ColumnMeta): string {
 
 export interface ViewResolver {
   resolve(def: ViewDefinition): Promise<ResolvedView>;
-  list(def: ViewDefinition, opts?: { page?: number; pageSize?: number; search?: string; sort?: string; direction?: 'asc' | 'desc'; filters?: Predicate[]; scope?: Predicate[] }): Promise<ListResult>;
-  read(def: ViewDefinition, id: unknown): Promise<Record<string, unknown> | null>;
-  create(def: ViewDefinition, values: Record<string, unknown>): Promise<Record<string, unknown>>;
-  update(def: ViewDefinition, id: unknown, values: Record<string, unknown>): Promise<Record<string, unknown>>;
-  remove(def: ViewDefinition, id: unknown): Promise<void>;
+  list(def: ViewDefinition, opts?: { page?: number; pageSize?: number; search?: string; sort?: string; direction?: 'asc' | 'desc'; filters?: Predicate[]; scope?: Predicate[]; actor?: unknown }): Promise<ListResult>;
+  read(def: ViewDefinition, id: unknown, actor?: unknown): Promise<Record<string, unknown> | null>;
+  create(def: ViewDefinition, values: Record<string, unknown>, actor?: unknown): Promise<Record<string, unknown>>;
+  update(def: ViewDefinition, id: unknown, values: Record<string, unknown>, actor?: unknown): Promise<Record<string, unknown>>;
+  remove(def: ViewDefinition, id: unknown, actor?: unknown): Promise<void>;
   /** Selectable rows for a relation/m2m field. */
   options(def: ViewDefinition, fieldKeyName: string, search?: string, limit?: number): Promise<{ value: unknown; label: string }[]>;
   introspector: Introspector;
@@ -189,7 +221,7 @@ export interface ViewResolver {
 
 export function createViewResolver(
   db: Queryable,
-  opts: { schema?: string; ttlMs?: number; masking?: MaskOptions | MaskPolicy } = {}
+  opts: { access: AccessConfig; schema?: string; ttlMs?: number; masking?: MaskOptions | MaskPolicy }
 ): ViewResolver {
   const introspector = createIntrospector(db, opts);
 
@@ -202,6 +234,33 @@ export function createViewResolver(
       : createMaskPolicy(opts.masking as MaskOptions | undefined);
 
   const isMasked = (table: string, column: string) => policy.isMasked(table, column);
+
+  const access = opts.access;
+
+  /**
+   * Decide, and return the rows the decision allows.
+   *
+   * Throws on refusal rather than returning empty: "you may not" and "there are
+   * none" are different answers, and a caller that cannot tell them apart will
+   * show an empty screen to someone who should have been told no.
+   */
+  const gate = (actor: unknown, table: string, action: 'create' | 'read' | 'update' | 'delete'): Predicate[] => {
+    if (access === 'unrestricted') return [];
+    if (actor === undefined || actor === null) {
+      throw err(`Not permitted: ${action} on ${table} needs an actor, and none was supplied`);
+    }
+    const decision = access.can(actor, table, action);
+    if (!decision.allowed) throw err(`Not permitted: ${decision.reason}`);
+    // A granted predicate this layer cannot express must DENY. Skipping it would
+    // widen the grant to every row — the same failure as dropping an unresolved
+    // claim, one layer further down, and just as silent.
+    for (const p of decision.scope) {
+      if (p.op !== undefined && !FILTER_OPS.includes(p.op as FilterOp)) {
+        throw err(`Not permitted: the grant for ${action} on ${table} uses an unsupported comparison "${p.op}"`);
+      }
+    }
+    return decision.scope as Predicate[];
+  };
 
   /**
    * The columns a caller is allowed to see. Every projection in this file goes
@@ -579,7 +638,7 @@ export function createViewResolver(
     return m;
   }
 
-  async function list(def: ViewDefinition, o: { page?: number; pageSize?: number; search?: string; sort?: string; direction?: 'asc' | 'desc'; filters?: Predicate[]; scope?: Predicate[] } = {}): Promise<ListResult> {
+  async function list(def: ViewDefinition, o: { page?: number; pageSize?: number; search?: string; sort?: string; direction?: 'asc' | 'desc'; filters?: Predicate[]; scope?: Predicate[]; actor?: unknown } = {}): Promise<ListResult> {
     const view = await resolve(def);
     const meta = await tableOrThrow(def.table);
     const sources = await relationSources(view);
@@ -639,6 +698,18 @@ export function createViewResolver(
     // parent down every row is noise. Requiring it to be a field meant hiding the
     // column broke the panel. Masked columns are still refused — scoping by a
     // secret is the same oracle filtering by one would be.
+    // Granted rows first, and through their own error path. Both restrictions are
+    // structural and both check against the table rather than the view's fields —
+    // hiding a column must not widen who sees the row — but a broken GRANT is a
+    // permission failure that has to fail closed and say so, while a broken bound
+    // scope is the caller getting it wrong. Same channel, different fault.
+    for (const p of gate(o.actor, def.table, 'read')) {
+      const col = meta.columns.find((c) => c.name === p.column);
+      if (!col) throw err(`Not permitted: the grant restricts ${meta.name}.${p.column}, which does not exist`);
+      const sql = predicateSql(p, `t.${qid(col.name)}`, params);
+      if (sql) clauses.push(sql);
+    }
+
     for (const p of o.scope ?? []) {
       const col = meta.columns.find((c) => c.name === p.column);
       if (!col) throw err(`Cannot scope by "${p.column}": ${meta.name} has no such column`);
@@ -717,15 +788,40 @@ export function createViewResolver(
     };
   }
 
-  async function read(def: ViewDefinition, id: unknown): Promise<Record<string, unknown> | null> {
+  /**
+   * Granted predicates as an ` and ...` fragment, checked against the TABLE.
+   *
+   * A grant restricts rows the view may not even expose as fields — hiding a
+   * column must never widen who can see the row — so this validates against the
+   * catalog, exactly as the bound scope does.
+   */
+  function grantClauses(granted: Predicate[], meta: TableMeta, params: unknown[], prefix = 't.'): string {
+    const out: string[] = [];
+    for (const p of granted) {
+      const col = meta.columns.find((c) => c.name === p.column);
+      if (!col) throw err(`Not permitted: the grant restricts ${meta.name}.${p.column}, which does not exist`);
+      const sql = predicateSql(p, `${prefix}${qid(col.name)}`, params);
+      if (sql) out.push(sql);
+    }
+    return out.length ? ' and ' + out.join(' and ') : '';
+  }
+
+  async function read(def: ViewDefinition, id: unknown, actor?: unknown): Promise<Record<string, unknown> | null> {
     const view = await resolve(def);
     const meta = await tableOrThrow(def.table);
     const sources = await relationSources(view);
     const { select, join } = selectWithLabels(view, meta, sources);
 
+    // The grant narrows WHICH row this id may address. A row outside it comes
+    // back null — the same answer as a row that does not exist, deliberately:
+    // "no such order" and "not your order" must not be distinguishable, or the
+    // endpoint becomes a way to enumerate other people's ids.
+    const params: unknown[] = [String(id)];
+    const scoped = grantClauses(gate(actor, def.table, 'read'), meta, params);
+
     const res = await db.query(
-      `select ${select} from ${qid(def.table)} t\n${join}\nwhere t.${qid(requirePk(view))}::text = $1 limit 1`,
-      [String(id)]
+      `select ${select} from ${qid(def.table)} t\n${join}\nwhere t.${qid(requirePk(view))}::text = $1${scoped} limit 1`,
+      params
     );
     const row = res.rows[0] as Record<string, unknown> | undefined;
     if (!row) return null;
@@ -851,9 +947,18 @@ export function createViewResolver(
     }
   }
 
-  async function create(def: ViewDefinition, values: Record<string, unknown>) {
+  async function create(def: ViewDefinition, values: Record<string, unknown>, actor?: unknown) {
     const { view, own, links } = await partition(def, values);
     const meta = await tableOrThrow(def.table);
+    // A row-restricted grant cannot be checked on an INSERT: there is no existing
+    // row to test, and guessing which submitted values would satisfy the rule is
+    // how you end up writing a row the grantee cannot then read. Refuse plainly.
+    const granted = gate(actor, def.table, 'create');
+    if (granted.length) {
+      throw err(
+        `Not permitted: creating in ${def.table} is granted only for a restricted set of rows, which cannot be verified on insert — grant create on the whole table, or create through your own endpoint.`
+      );
+    }
     // `returning *` returns the row the DATABASE produced, which includes columns the
     // caller never submitted and may not see — a create against a users table handed
     // back the stored password hash. Project it, exactly like a read.
@@ -873,17 +978,23 @@ export function createViewResolver(
     });
   }
 
-  async function update(def: ViewDefinition, id: unknown, values: Record<string, unknown>) {
+  async function update(def: ViewDefinition, id: unknown, values: Record<string, unknown>, actor?: unknown) {
     const { view, own, links } = await partition(def, values);
     const meta = await tableOrThrow(def.table);
     const returning = visibleColumns(meta).map((c) => qid(c.name)).join(', ');
+    // Editing a row outside the grant must fail as "not found", the same answer a
+    // missing row gives — telling someone their edit was FORBIDDEN confirms the
+    // row exists and belongs to somebody.
+    const granted = gate(actor, def.table, 'update');
     return transact(async (exec) => {
       let row: Record<string, unknown> | undefined;
       const cols = Object.keys(own);
       if (cols.length) {
+        const params: unknown[] = [String(id), ...Object.values(own)];
+        const scoped = grantClauses(granted, meta, params, '');
         const res = await exec.query(
-          `update ${qid(def.table)} set ${cols.map((c, i) => `${qid(c)} = $${i + 2}`).join(', ')} where ${qid(requirePk(view))}::text = $1 returning ${returning}`,
-          [String(id), ...Object.values(own)]
+          `update ${qid(def.table)} set ${cols.map((c, i) => `${qid(c)} = $${i + 2}`).join(', ')} where ${qid(requirePk(view))}::text = $1${scoped} returning ${returning}`,
+          params
         );
         row = res.rows[0] as Record<string, unknown> | undefined;
         if (!row) throw err('Row not found');
@@ -891,7 +1002,9 @@ export function createViewResolver(
         // The no-op branch still returns the row, so it needs the same projection —
         // `select *` here would undo the whole guard for any update that submitted
         // only many-to-many changes.
-        const res = await exec.query(`select ${returning} from ${qid(def.table)} where ${qid(requirePk(view))}::text = $1`, [String(id)]);
+        const params: unknown[] = [String(id)];
+        const scoped = grantClauses(granted, meta, params, '');
+        const res = await exec.query(`select ${returning} from ${qid(def.table)} where ${qid(requirePk(view))}::text = $1${scoped}`, params);
         row = res.rows[0] as Record<string, unknown> | undefined;
         if (!row) throw err('Row not found');
       }
@@ -900,9 +1013,12 @@ export function createViewResolver(
     });
   }
 
-  async function remove(def: ViewDefinition, id: unknown) {
+  async function remove(def: ViewDefinition, id: unknown, actor?: unknown) {
     const view = await resolve(def);
-    const res = await db.query(`delete from ${qid(def.table)} where ${qid(requirePk(view))}::text = $1`, [String(id)]);
+    const meta = await tableOrThrow(def.table);
+    const params: unknown[] = [String(id)];
+    const scoped = grantClauses(gate(actor, def.table, 'delete'), meta, params, '');
+    const res = await db.query(`delete from ${qid(def.table)} where ${qid(requirePk(view))}::text = $1${scoped}`, params);
     if (!res.rowCount) throw err('Row not found');
   }
 

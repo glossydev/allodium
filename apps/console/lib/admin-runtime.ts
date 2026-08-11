@@ -16,6 +16,10 @@ export function getViewResolver() {
   // runtime would answer with a different idea of what is secret than the Content
   // silo two tabs away — and it is the runtime, not the console, that a deployed
   // dashboard will be running.
-  g.__allodiumViewResolver ??= createViewResolver(getDb().pool, { masking: maskPolicy });
+  // 'unrestricted' is the console saying out loud what it already is: loopback
+  // -pinned, unauthenticated, running as super_admin by design. A deployed
+  // dashboard passes a real policy here, and the resolver requires the choice to
+  // be made rather than defaulting to one — the wrong default is an open admin API.
+  g.__allodiumViewResolver ??= createViewResolver(getDb().pool, { access: 'unrestricted', masking: maskPolicy });
   return g.__allodiumViewResolver;
 }
