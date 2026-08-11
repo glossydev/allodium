@@ -47,3 +47,21 @@ export {
   type CreateActAsOptions,
 } from './actAs.js';
 export { firstForwardedIp } from './ip.js';
+export {
+  createAccessPolicy,
+  PUBLIC_ACTOR,
+  PUBLIC_ROLE,
+  ACTIONS,
+  type Actor,
+  type Action,
+  type Grant,
+  type GrantPredicate,
+  type AccessDecision,
+  type AccessPolicy,
+  type AccessPolicyOptions,
+} from './access.js';
+export {
+  createGrantLoader,
+  type GrantLoader,
+  type GrantLoaderOptions,
+} from './grants.js';

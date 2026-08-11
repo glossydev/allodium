@@ -18,7 +18,8 @@
   ],
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "typecheck": "tsc -p tsconfig.json --noEmit"
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "node test/act-as.mjs && node test/access.mjs && node test/grants.mjs"
   },
   "engines": {
     "node": ">=20"
