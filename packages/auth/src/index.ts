@@ -65,3 +65,11 @@ export {
   type GrantLoader,
   type GrantLoaderOptions,
 } from './grants.js';
+export {
+  createAuthRoutes,
+  headerCookieSetter,
+  readCookie,
+  type AuthRoutes,
+  type AuthRoutesOptions,
+  type AuthUserRow,
+} from './routes.js';

@@ -19,7 +19,7 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "node test/act-as.mjs && node test/access.mjs && node test/grants.mjs"
+    "test": "node test/act-as.mjs && node test/access.mjs && node test/grants.mjs && node test/routes.mjs"
   },
   "engines": {
     "node": ">=20"
