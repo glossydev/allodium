@@ -1,9 +1,9 @@
 import 'server-only';
 import { existsSync } from 'node:fs';
-import { mkdir, readdir, readFile, rename, unlink, writeFile } from 'node:fs/promises';
+import { mkdir, rename, unlink, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import type { ViewDefinition } from '@allodium/admin/view';
-import { pickViewForTable } from './view-for-table';
+import { createFileViewStore } from '@allodium/admin/server';
 
 /**
  * View definitions live as JSON files in the repo — committed, diffable, reviewed
@@ -64,85 +64,35 @@ export function schemaRef(): string {
   return SCHEMA_URL;
 }
 
-export interface StoredView {
-  /** File stem — "posts" for posts.view.json. This is the key in URLs. */
-  name: string;
-  definition: ViewDefinition;
-}
-
-export async function listViewNames(): Promise<string[]> {
-  try {
-    const files = await readdir(VIEWS_DIR());
-    return files.filter((f) => f.endsWith('.view.json')).map((f) => f.replace(/\.view\.json$/, '')).sort();
-  } catch {
-    return []; // no views directory yet is a normal empty state, not an error
-  }
-}
-
 /**
- * Null means NO SUCH FILE. A file that exists but will not parse throws instead,
- * because "unknown view" is a lie about a file sitting right there — and these
- * are hand-editable, so a stray comma is a thing that actually happens. The
- * caller turns the throw into the parser's own message, same contract as the
- * DDL preview: the actionable part of an error is the part worth keeping.
+ * Reading is the PACKAGE's job now.
+ *
+ * A deployed dashboard needs exactly this reader — including the retry that only
+ * a hammer test found — so it graduated into `@allodium/admin/server` and the
+ * console delegates rather than keeping a second copy. Two implementations of one
+ * behaviour is the drift this repo has paid for repeatedly.
+ *
+ * The WRITER stays here: authoring definitions is the build lane, and only the
+ * console does it.
  */
-/**
- * The definition a caller that knows its TABLE should render.
- *
- * Related panels address a table — `post_tags`, validated against the catalog —
- * and carry a view name only as a preference. Those are two different
- * namespaces: files are named by hand, tables are named by the schema, and
- * nothing kept them in step. A file called `post_tags.view.json` containing a
- * view of `tags` satisfied a lookup by name and then failed on the first bound
- * filter, because the screen it rendered had no `post_id`. The name matching was
- * never the thing that made the panel correct.
- *
- * So the table decides and the name only breaks ties:
- *   1. the named file, IF it really is about this table;
- *   2. otherwise any view over this table, preferring one named after it;
- *   3. otherwise the implicit screen — `{ table }` — which the runtime already
- *      resolves to every visible column. "Omission means the sensible default"
- *      applies here too: a panel with no curated view is a plain screen, not an
- *      error.
- *
- * A parse failure still throws: a file that exists and is broken is worth
- * reporting, not silently stepping over.
- */
-export async function loadViewForTable(name: string, table: string): Promise<ViewDefinition> {
-  const named = await loadView(name);
-  // Only read every file when the named one did not already answer it.
-  const all = named?.table === table ? [] : await loadAllViews();
-  return pickViewForTable(named, all, table);
-}
+const store = () =>
+  createFileViewStore({
+    dir: VIEWS_DIR(),
+    // Skipped while scanning is not the same as ignored: these are hand-edited
+    // files, and the person who broke one is sitting right here.
+    onProblem: (name, message) => console.warn(`[console] ${name}.view.json skipped: ${message}`),
+  });
 
-export async function loadView(name: string): Promise<ViewDefinition | null> {
-  if (!SAFE_NAME.test(name)) return null; // the name reaches a filesystem path
-  const file = path.join(VIEWS_DIR(), `${name}.view.json`);
+export type { StoredView } from '@allodium/admin/server';
 
-  // Re-read a document that will not parse before believing it.
-  //
-  // A file being rewritten right now reads as truncated, and that is a passing
-  // condition — the writer finishes in milliseconds. Retrying here is what makes
-  // it invisible, and it covers writers this code does not control (an editor
-  // saving the file, a git checkout) as well as its own. A file that is STILL
-  // broken after the retries is broken for real, and says so.
-  let lastError: unknown;
-  for (let attempt = 0; attempt < 4; attempt++) {
-    let raw: string;
-    try {
-      raw = await readFile(file, 'utf8');
-    } catch {
-      return null; // genuinely absent
-    }
-    try {
-      return JSON.parse(raw) as ViewDefinition;
-    } catch (e) {
-      lastError = e;
-      await new Promise((r) => setTimeout(r, 15 * (attempt + 1)));
-    }
-  }
-  throw new Error(`${name}.view.json is not valid JSON: ${lastError instanceof Error ? lastError.message : String(lastError)}`);
-}
+export const listViewNames = (): Promise<string[]> => store().names();
+
+export const loadView = (name: string): Promise<ViewDefinition | null> => store().load(name);
+
+export const loadViewForTable = (name: string, table: string): Promise<ViewDefinition> =>
+  store().loadForTable(name, table);
+
+export const loadAllViews = () => store().all();
 
 /**
  * Write a definition to disk. The console is a build-time tool with filesystem
@@ -225,18 +175,3 @@ export async function deleteView(name: string): Promise<boolean> {
   }
 }
 
-export async function loadAllViews(): Promise<StoredView[]> {
-  const names = await listViewNames();
-  const out: StoredView[] = [];
-  for (const name of names) {
-    try {
-      const definition = await loadView(name);
-      if (definition) out.push({ name, definition });
-    } catch (e) {
-      // One unparseable file must not blank the whole index — but it should not
-      // vanish quietly either, or the picker just silently lacks an entry.
-      console.warn(`[console] skipping ${name}.view.json — ${e instanceof Error ? e.message : String(e)}`);
-    }
-  }
-  return out;
-}

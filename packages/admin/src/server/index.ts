@@ -24,3 +24,9 @@ export {
   type MaskOptions,
   type MaskSpec,
 } from './masking.js';
+export {
+  createFileViewStore,
+  pickViewForTable,
+  type ViewStore,
+  type StoredView,
+} from './views.js';
