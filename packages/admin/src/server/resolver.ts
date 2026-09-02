@@ -216,6 +216,12 @@ export interface ViewResolver {
   remove(def: ViewDefinition, id: unknown, actor?: unknown): Promise<void>;
   /** Selectable rows for a relation/m2m field. */
   options(def: ViewDefinition, fieldKeyName: string, search?: string, limit?: number): Promise<{ value: unknown; label: string }[]>;
+  /**
+   * The gate alone: throws "Not permitted" or returns the granted row scope.
+   * For callers that need the decision before doing anything — a route deciding
+   * whether to describe a screen's shape at all — without paying for a query.
+   */
+  authorize(def: ViewDefinition, action: 'create' | 'read' | 'update' | 'delete', actor?: unknown): Promise<Predicate[]>;
   introspector: Introspector;
 }
 
@@ -1022,7 +1028,11 @@ export function createViewResolver(
     if (!res.rowCount) throw err('Row not found');
   }
 
-  return { resolve, list, read, create, update, remove, options, introspector };
+  async function authorize(def: ViewDefinition, action: 'create' | 'read' | 'update' | 'delete', actor?: unknown): Promise<Predicate[]> {
+    return gate(actor, def.table, action);
+  }
+
+  return { resolve, list, read, create, update, remove, options, authorize, introspector };
 }
 
 export { renderDisplay, isColumnField, isRelationField, isManyToManyField };

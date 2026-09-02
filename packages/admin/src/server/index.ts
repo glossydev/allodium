@@ -30,3 +30,9 @@ export {
   type ViewStore,
   type StoredView,
 } from './views.js';
+export {
+  createAdminRoutes,
+  friendlyError,
+  type AdminRoutes,
+  type AdminRoutesOptions,
+} from './routes.js';
