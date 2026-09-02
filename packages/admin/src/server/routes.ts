@@ -107,6 +107,16 @@ export function createAdminRoutes(opts: AdminRoutesOptions): AdminRoutes {
     if (m.startsWith('Not permitted')) return 403;
     if (m === 'Row not found') return 404;
     if (/^Cannot (filter|scope)/.test(m) || m.startsWith('Invalid view') || m.startsWith('Unknown field')) return 400;
+    // Postgres says whose fault a failure is, in the SQLSTATE class: 22 is a
+    // data exception (bad value for the type), 23 an integrity violation (a
+    // duplicate, a missing parent, a NOT NULL). Both are the request, not the
+    // server — 400, with pg's own detail, so the operator can fix what they sent.
+    let cur: unknown = e;
+    for (let i = 0; i < 5 && cur; i++) {
+      const code = (cur as { code?: unknown }).code;
+      if (typeof code === 'string' && /^2[23]/.test(code)) return 400;
+      cur = (cur as { cause?: unknown }).cause;
+    }
     return 500;
   };
 

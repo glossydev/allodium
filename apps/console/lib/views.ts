@@ -17,6 +17,9 @@ import { createFileViewStore } from '@allodium/admin/server';
 
 const VIEWS_DIR = () => process.env.ADMIN_VIEWS_DIR || path.join(process.cwd(), 'admin', 'views');
 
+/** Where the definitions live — evaluated per call so ADMIN_VIEWS_DIR stays live. */
+export const viewsDir = VIEWS_DIR;
+
 const SAFE_NAME = /^[a-zA-Z0-9_-]+$/;
 
 /* ------------------------------ $schema ------------------------------ */
