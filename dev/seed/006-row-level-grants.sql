@@ -26,7 +26,8 @@ insert into roles (key, label, description, rank)
 values ('public', 'Public', 'Anonymous visitors. Anything granted here is readable by the whole internet.', 1000)
 on conflict (key) do nothing;
 
--- What the internet may read on the demo: published posts and their authors.
+-- What the internet may read on the demo: published posts, approved comments,
+-- their authors, and the shop's products.
 -- Deliberately narrow — this is the row that decides what leaks.
 insert into role_permissions (role_id, table_name, can_create, can_read, can_update, can_delete, row_filter)
 select r.id, v.table_name, false, true, false, false, v.row_filter::jsonb
@@ -35,7 +36,9 @@ select r.id, v.table_name, false, true, false, false, v.row_filter::jsonb
     ('posts',      '[{"column":"status","op":"eq","value":"published"}]'),
     ('authors',    null),
     ('tags',       null),
-    ('post_tags',  null)
+    ('post_tags',  null),
+    ('comments',   '[{"column":"approved","op":"eq","value":true}]'),
+    ('products',   null)
   ) as v(table_name, row_filter)
  where r.key = 'public'
 on conflict (role_id, table_name) do update
@@ -68,8 +71,8 @@ begin
   select count(*) into n_public from role_permissions rp join roles r on r.id = rp.role_id where r.key = 'public';
   select count(*) into n_member from role_permissions rp join roles r on r.id = rp.role_id
    where r.key = 'member' and rp.row_filter is not null;
-  if n_public < 4 then
-    raise exception 'public role should have 4 grants, found %', n_public;
+  if n_public < 6 then
+    raise exception 'public role should have 6 grants, found %', n_public;
   end if;
   if n_member < 1 then
     raise exception 'member should have at least one row-restricted grant, found %', n_member;
