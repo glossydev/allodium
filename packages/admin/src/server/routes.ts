@@ -105,7 +105,7 @@ export function createAdminRoutes(opts: AdminRoutesOptions): AdminRoutes {
   const status = (e: unknown): number => {
     const m = e instanceof Error ? e.message : String(e);
     if (m.startsWith('Not permitted')) return 403;
-    if (m === 'Row not found') return 404;
+    if (m === 'Row not found' || m.startsWith('Unknown table')) return 404;
     if (/^Cannot (filter|scope)/.test(m) || m.startsWith('Invalid view') || m.startsWith('Unknown field')) return 400;
     // Postgres says whose fault a failure is, in the SQLSTATE class: 22 is a
     // data exception (bad value for the type), 23 an integrity violation (a
@@ -129,12 +129,19 @@ export function createAdminRoutes(opts: AdminRoutesOptions): AdminRoutes {
     }
   }
 
-  async function definition(name: string, request: Request): Promise<ViewDefinition | null> {
+  async function definition(name: string, request: Request): Promise<ViewDefinition> {
     // `?table=` means the caller knows which table it needs — a related panel
     // does — and the name is only a preference. Both /view and /list honour it,
     // or the columns and the rows would come from two different definitions.
     const table = new URL(request.url).searchParams.get('table');
-    return table ? views.loadForTable(name, table) : views.load(name);
+    if (table) return views.loadForTable(name, table);
+    // No file of that name: treat the name as a table. A granted table with no
+    // curated screen renders its implicit one — every visible column — which is
+    // what "omission means the sensible default" has meant everywhere else, and
+    // what a storefront asking for `products` expects. A name that is not a
+    // table either fails in the resolver as Unknown table, which is the 404.
+    // The gate still decides who may read it; a name is not a permission.
+    return (await views.load(name)) ?? views.loadForTable(name, name);
   }
 
   return {
@@ -156,7 +163,7 @@ export function createAdminRoutes(opts: AdminRoutesOptions): AdminRoutes {
       const [name, kind, third] = segments.map((s) => decodeURIComponent(s));
       if (!name || !kind) return fail(request, 'Not found', 404);
 
-      let def: ViewDefinition | null;
+      let def: ViewDefinition;
       try {
         def = await definition(name, request);
       } catch (e) {
@@ -164,7 +171,6 @@ export function createAdminRoutes(opts: AdminRoutesOptions): AdminRoutes {
         // would be a lie about a file sitting right there.
         return fail(request, friendlyError(e), 500);
       }
-      if (!def) return fail(request, `Unknown view: ${name}`, 404);
 
       const actor = await opts.actorFor(request);
       const q = new URL(request.url).searchParams;

@@ -141,7 +141,14 @@ if (!process.env.DATABASE_URL) {
     }
 
     /* --------------------------- plumbing -------------------------------- */
-    ok('an unknown view is 404', (await call('GET', ['nope', 'list'])).status === 404);
+    ok('a name that is neither a view nor a table is 404', (await call('GET', ['nope', 'list'])).status === 404);
+    // A real table with no curated screen renders its implicit one — the shop
+    // asking for `products` with no products.view.json. Still gated: the public
+    // has products, not customers.
+    const implicit = await call('GET', ['products', 'list'], { query: 'pageSize=5' });
+    ok('a granted table with no view file renders its implicit screen', implicit.status === 200 && (await jsonOf(implicit))?.total > 0, String(implicit.status));
+    ok('...and the shape of it too', (await call('GET', ['products', 'view'])).status === 200);
+    ok('...but a name is not a permission', (await call('GET', ['customers', 'list'])).status === 403);
     ok('an unknown action is 404', (await call('GET', ['posts', 'explode'])).status === 404);
     ok('a bad filter is 400', (await call('GET', ['posts', 'list'], { query: 'filter=status:roughly:x' })).status === 400);
     ok('a filter on an unknown field is 400, not 500', (await call('GET', ['posts', 'list'], { query: 'filter=nope:eq:1' })).status === 400);
