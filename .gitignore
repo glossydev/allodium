@@ -21,3 +21,6 @@ dist/
 # (.<name>.<pid>.<n>.tmp), then a rename over it. If the process dies between the
 # two the temp survives — it should never reach a commit.
 .*.tmp
+
+# deploy credential — lives at the workspace root, never in a repo
+.deploy_token
