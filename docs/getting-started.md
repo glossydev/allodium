@@ -129,8 +129,9 @@ for f in dev/seed/00*.sql; do
 done
 ```
 
-Run them in order; each builds on the last. You get 15 tables: a blog, a small coffee
-store, and an identity model with roles and permissions.
+Run them in order; each builds on the last. You get 16 tables: a blog, a small coffee
+store, an identity model with roles and permissions, and the `sessions` table
+`@allodium/auth` signs people into.
 
 ### Configure and run
 
