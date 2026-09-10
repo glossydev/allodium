@@ -1,0 +1,54 @@
+name: Publish
+# Release = push a tag. No npm token exists anywhere: this job proves who it is
+# to npm with a short-lived OIDC credential (trusted publishing), and npm signs a
+# provenance attestation linking each tarball to this exact commit and workflow.
+#
+# Configured once per package on npmjs.com, Settings → Trusted Publisher →
+# GitHub Actions: owner glossydev, repository allodium, workflow publish.yml.
+# The connection cannot be edited after creation, only deleted and recreated.
+#
+# Re-running is safe: a package whose version is already on the registry is
+# skipped, so bumping one package and tagging publishes only that one. The
+# registry — not git — is the source of truth for what has shipped.
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  id-token: write   # OIDC, the whole of the authentication
+  contents: read
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          registry-url: https://registry.npmjs.org
+          # No cache on a release build; npm's own guidance for trusted publishing.
+
+      # Trusted publishing needs npm 11.5.1+; Node 22 ships an older npm.
+      - run: npm install -g npm@latest && npm --version
+
+      - run: npm ci
+      - run: npm run build
+      - run: npm test
+
+      - name: Publish what is not yet on the registry
+        run: |
+          set -euo pipefail
+          for dir in packages/db packages/storage packages/auth packages/admin; do
+            name=$(node -p "require('./$dir/package.json').name")
+            version=$(node -p "require('./$dir/package.json').version")
+            if [ "$(npm view "$name@$version" version 2>/dev/null || true)" = "$version" ]; then
+              echo "= $name@$version already published"
+              continue
+            fi
+            echo "+ $name@$version"
+            # From the package's own directory, never the root (see allodium-state:
+            # a root publish once installed a package into itself).
+            (cd "$dir" && npm publish --access public --provenance)
+          done

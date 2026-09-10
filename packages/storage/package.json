@@ -3,6 +3,11 @@
   "version": "0.2.0",
   "description": "Storage driver interface + local-disk driver + auth-aware asset serving for Allodium.",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/glossydev/allodium.git",
+    "directory": "packages/storage"
+  },
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
