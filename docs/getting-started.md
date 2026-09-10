@@ -46,6 +46,11 @@ already ESM and need no change.
 npm install @allodium/db @allodium/auth
 ```
 
+This guide describes the **0.2.x** line of every package. The 0.1.x releases predate
+the admin view runtime, the auth route factories, and the grant model; nothing below
+about screens, sessions over HTTP, or permissions applies to them. Check what you have
+with `npm view @allodium/admin version`.
+
 Peer dependencies (`pg`, `drizzle-orm`, `argon2`) install automatically with npm 7+. They
 are peers so that you control the versions and there is never a second copy of the
 driver.

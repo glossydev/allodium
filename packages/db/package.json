@@ -1,6 +1,6 @@
 {
   "name": "@allodium/db",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "description": "Postgres data-layer conventions for Allodium: pooling, transactions, typed query-module patterns on Drizzle + node-postgres.",
   "license": "MIT",
   "type": "module",

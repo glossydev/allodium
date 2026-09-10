@@ -1,6 +1,6 @@
 {
   "name": "@allodium/auth",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "First-party auth you own: argon2 passwords, session store, rotating refresh, OIDC, WebAuthn passkeys, reset emails, tenant membership.",
   "license": "MIT",
   "type": "module",
