@@ -173,12 +173,57 @@ if (!process.env.DATABASE_URL) {
     ok('...without clearing any cookie', setCookies(replay).length === 0, JSON.stringify(setCookies(replay)));
     ok('...leaving the rotated session alive', (await site.me(get({ cookie: newCookie }))).status === 200);
 
+    /* --------------------- refresh is scoped and gated ------------------- */
+    // A refresh cookie from the site surface, replayed at the admin surface,
+    // must not rotate there — the same scoping /me has always had.
+    ok('a site refresh token does not rotate at the admin surface', (await admin.refresh(post({}, { cookie: newCookie }))).status === 401);
+    ok('...and is still live at its own surface', (await site.me(get({ cookie: newCookie }))).status === 200);
+    // A suspended account cannot keep its session alive by refreshing.
+    const [{ status: wasStatus }] = await raw('select status from users where email = $1', [active.email]);
+    await raw("update users set status = 'suspended' where email = $1", [active.email]);
+    const whileSuspended = await site.refresh(post({}, { cookie: newCookie }));
+    await raw('update users set status = $2 where email = $1', [active.email, wasStatus]);
+    ok('a suspended user cannot refresh', whileSuspended.status === 401, String(whileSuspended.status));
+    ok('...and nothing was issued', setCookies(whileSuspended).length === 0);
+    ok('...while the session itself is untouched once reinstated', (await site.me(get({ cookie: newCookie }))).status === 200);
+
     /* ------------------------------- logout ------------------------------ */
-    const out = await site.logout(post({}, { cookie: newCookie }));
+    // The two-tab case: this tab's access cookie is STALE (another tab rotated)
+    // while its refresh cookie is live. Logout must still kill the session.
+    const rotatedAgain = await site.refresh(post({}, { cookie: newCookie }));
+    ok('a second rotation works', rotatedAgain.status === 200);
+    const liveRefresh = cookieHeader(rotatedAgain).split('; ').find((c) => c.startsWith('rt='));
+    const staleAccess = newCookie.split('; ').find((c) => c.startsWith('at='));
+    const staleJar = `${staleAccess}; ${liveRefresh}`;
+    ok('the stale access cookie no longer resolves', (await site.me(get({ cookie: staleJar }))).status === 401);
+    const outStale = await site.logout(post({}, { cookie: staleJar }));
+    ok('logout with a stale access cookie succeeds', outStale.status === 200);
+    ok('...and revokes by the refresh cookie, so it cannot be replayed', (await site.refresh(post({}, { cookie: staleJar }))).status === 401);
+    ok('...leaving the rotated access token dead too', (await site.me(get({ cookie: cookieHeader(rotatedAgain) }))).status === 401);
+
+    const fresh = await site.login(post({ email: active.email, password: 'devpassword' }));
+    const freshCookie = cookieHeader(fresh);
+    const out = await site.logout(post({}, { cookie: freshCookie }));
     ok('logout succeeds', out.status === 200);
     ok('...clearing the cookies', setCookies(out).length >= 2);
-    ok('...and the session is gone', (await site.me(get({ cookie: newCookie }))).status === 401);
+    ok('...and the session is gone', (await site.me(get({ cookie: freshCookie }))).status === 401);
     ok('logout with no session still succeeds', (await site.logout(post({}))).status === 200);
+    // A revoke the database refuses must NOT clear the cookies.
+    const brokenStore = { ...store, revoke: async () => { throw new Error('db down'); } };
+    const brokenRoutes = createAuthRoutes({ sessions: brokenStore, cookies, origin: 'site', findUserByEmail, toPublicUser });
+    const failedOut = await brokenRoutes.logout(post({}, { cookie: freshCookie }));
+    ok('a logout the database refuses is a 500', failedOut.status === 500, String(failedOut.status));
+    ok('...with the cookies left alone', setCookies(failedOut).length === 0);
+
+    /* ---------------------- cross-site request forgery --------------------- */
+    const forgedLogin = await site.login(post({ email: active.email, password: 'devpassword' }, { origin: 'http://evil.test' }));
+    ok('a login from an unlisted origin is refused', forgedLogin.status === 403);
+    ok('...without a session being minted', setCookies(forgedLogin).length === 0);
+    ok('a login from an allowlisted origin passes', (await site.login(post({ email: active.email, password: 'devpassword' }, { origin: 'http://localhost:3191' }))).status === 200);
+    ok('a login from this host passes', (await site.login(post({ email: active.email, password: 'devpassword' }, { origin: 'https://api.test' }))).status === 200);
+    ok('a form-encoded login is refused as 415', (await site.login(new Request('http://api.test/login', { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: 'email=x&password=y' }))).status === 415);
+    ok('a request the browser labels cross-site is refused', (await site.logout(post({}, { 'sec-fetch-site': 'cross-site' }))).status === 403);
+    ok('a bodiless logout with no content type still passes', (await site.logout(new Request('http://api.test/logout', { method: 'POST' }))).status === 200);
 
     /* -------------------------------- CORS ------------------------------- */
     const allowed = await site.me(get({ origin: 'http://localhost:3191' }));

@@ -80,6 +80,7 @@ console.log('view.schema.json ↔ src/view.ts');
 comparePropsg('ViewDefinition', propsOf('ViewDefinition'), SCHEMA);
 comparePropsg('ListOptions', propsOf('ListOptions'), SCHEMA.definitions.list);
 comparePropsg('RelatedList', propsOf('RelatedList'), SCHEMA.definitions.relatedList);
+comparePropsg('ViewLink', propsOf('ViewLink'), SCHEMA.definitions.link);
 
 /* ------------------------------ the fields ---------------------------- */
 
@@ -123,12 +124,22 @@ check(
   'ListOptions.sort.direction values match',
   setEq(unionOf('ListOptions', 'sort'), enumOf(SCHEMA.definitions.list.properties.sort.properties.direction))
 );
+check('ViewLink.target values match', setEq(unionOf('ViewLink', 'target'), enumOf(SCHEMA.definitions.link.properties.target)));
+check('ViewLink.in values match', setEq(unionOf('ViewLink', 'in'), enumOf(SCHEMA.definitions.link.properties.in.items)));
+// The schema's href pattern and view.ts's isSafeHref are the same rule declared
+// twice, so hold them to the same verdicts.
+{
+  const pattern = new RegExp(SCHEMA.definitions.link.properties.href.pattern);
+  const safe = (h) => /^(\/(?!\/)|https?:\/\/)/i.test(h);
+  const cases = ['/blog/{slug}', 'https://x.test/{id}', 'HTTP://x', '//evil', 'javascript:alert(1)', 'blog/x', 'data:x', ''];
+  check('link.href pattern agrees with isSafeHref', cases.every((c) => pattern.test(c) === safe(c)), cases.filter((c) => pattern.test(c) !== safe(c)).join(', '));
+}
 
 /* --------------------------- structural sanity -------------------------- */
 
 check("root requires 'table'", JSON.stringify(SCHEMA.required) === '["table"]');
 check('root rejects unknown keys', SCHEMA.additionalProperties === false);
-for (const v of ['columnField', 'relationField', 'm2mField', 'list', 'relatedList']) {
+for (const v of ['columnField', 'relationField', 'm2mField', 'list', 'relatedList', 'link']) {
   check(`${v} rejects unknown keys`, SCHEMA.definitions[v].additionalProperties === false);
 }
 check("relatedList requires table + foreignKey", JSON.stringify(SCHEMA.definitions.relatedList.required) === '["table","foreignKey"]');

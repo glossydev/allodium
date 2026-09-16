@@ -1,6 +1,6 @@
 {
   "name": "@allodium/auth",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "First-party auth you own: argon2 passwords, session store, rotating refresh, OIDC, WebAuthn passkeys, reset emails, tenant membership.",
   "license": "MIT",
   "repository": {
@@ -24,7 +24,7 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "node test/act-as.mjs && node test/access.mjs && node test/grants.mjs && node test/routes.mjs"
+    "test": "node test/act-as.mjs && node test/access.mjs && node test/grants.mjs && node test/routes.mjs && node test/loader.mjs"
   },
   "engines": {
     "node": ">=20"

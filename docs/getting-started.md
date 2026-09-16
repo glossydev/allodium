@@ -46,14 +46,26 @@ already ESM and need no change.
 npm install @allodium/db @allodium/auth
 ```
 
-This guide describes the **0.2.x** line of every package. The 0.1.x releases predate
+This guide describes the packages at **0.2.0 or later**. The 0.1.x releases predate
 the admin view runtime, the auth route factories, and the grant model; nothing below
 about screens, sessions over HTTP, or permissions applies to them. Check what you have
-with `npm view @allodium/admin version`.
+with `npm view @allodium/admin version`. The packages version independently — `db` and
+`storage` move only when they change — so do not expect the four numbers to match.
 
 Peer dependencies (`pg`, `drizzle-orm`, `argon2`) install automatically with npm 7+. They
 are peers so that you control the versions and there is never a second copy of the
-driver.
+driver. pnpm does not auto-install peers by default; add them yourself. **TypeScript
+projects also need `@types/pg`** — `pg` ships no types, and without them `createDb`
+fails to type-check with an error that does not mention `pg` at all:
+
+```bash
+npm install -D @types/pg
+```
+
+**Next.js:** put `@allodium/admin` in `transpilePackages` and the rest (`pg`, `argon2`,
+`@allodium/db`, `@allodium/auth`, `@allodium/storage`) in `serverExternalPackages`. The
+admin package's React components must be compiled against your React; the others carry
+native and Node-only code. See the [admin README](../packages/admin/README.md).
 
 ### A first script
 

@@ -1,5 +1,5 @@
 import { createHash, randomBytes } from 'node:crypto';
-import { and, eq, getTableColumns, gt, lt, ne } from 'drizzle-orm';
+import { and, eq, getTableColumns, gt, lt, ne, or } from 'drizzle-orm';
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
 import type { PgColumn, PgTable } from 'drizzle-orm/pg-core';
 
@@ -54,8 +54,14 @@ export interface SessionStore {
    * hash, so of two concurrent refreshes with the same token exactly one wins (the loser
    * gets null → 401 → single-flight middleware forgiveness keeps the winner's cookies).
    * Sliding window: each rotation extends the refresh expiry by refreshTtlMs.
+   *
+   * Refuses — null, nothing issued — when the session's user no longer passes
+   * `isUserActive`, or when `origin` is given and the session belongs to another
+   * surface. A suspended account must not be able to keep its session alive by
+   * refreshing, and a refresh cookie lifted from one surface must not rotate at
+   * another; both were holes that resolveUser closed and rotate left open.
    */
-  rotate(refreshToken: string): Promise<MintedSession | null>;
+  rotate(refreshToken: string, opts?: { origin?: OriginScope }): Promise<MintedSession | null>;
   /**
    * Resolve an access token to its raw user row (drizzle camelCase properties — map to
    * your wire shape and strip credential columns in YOUR binding). Null on unknown or
@@ -66,7 +72,16 @@ export interface SessionStore {
    * origins resolves to nothing.
    */
   resolveUser(accessToken: string, opts?: { origin?: OriginScope }): Promise<Record<string, unknown> | null>;
-  /** Logout: revoke by whichever token the cookie jar still has. Best-effort, never throws. */
+  /**
+   * Logout: revoke by EVERY token the cookie jar holds, not the first one that
+   * looks right. After a rotation in another tab the access cookie here is stale
+   * and matches nothing, while the refresh cookie may still be live — revoking by
+   * the access token alone then deletes nothing and the session survives logout.
+   *
+   * Throws when the database refuses. Swallowing that would let the caller clear
+   * the cookies over a session that still exists, which is a person believing
+   * they are signed out when they are not.
+   */
   revoke(tokens: { accessToken?: string; refreshToken?: string }): Promise<void>;
   /** Revoke all of a user's sessions (password reset), optionally sparing one access token. */
   revokeAllForUser(userId: string, opts?: { exceptAccessToken?: string }): Promise<void>;
@@ -108,6 +123,9 @@ export function createSessionStore(opts: {
   const isAccessToken = (t: unknown): boolean => typeof t === 'string' && t.startsWith(accessPrefix);
   const isRefreshToken = (t: unknown): boolean => typeof t === 'string' && t.startsWith(refreshPrefix);
   const newToken = (prefix: string): string => prefix + randomBytes(32).toString('base64url');
+  /** The surface restriction as WHERE conditions — none when unscoped. Shared by every read of a session. */
+  const originClause = (scope: OriginScope | undefined) =>
+    scope === undefined ? [] : 'equals' in scope ? [eq(sessions.origin, scope.equals)] : [ne(sessions.origin, scope.not)];
 
   return {
     accessTtlMs,
@@ -132,12 +150,28 @@ export function createSessionStore(opts: {
       return { accessToken, refreshToken, expires: accessTtlMs };
     },
 
-    async rotate(refreshToken) {
+    async rotate(refreshToken, callOpts = {}) {
       if (!isRefreshToken(refreshToken)) return null;
-      const accessToken = newToken(accessPrefix);
-      const nextRefreshToken = newToken(refreshPrefix);
       const now = Date.now();
       const nowIso = new Date(now).toISOString();
+      const hash = sha256(refreshToken);
+      const live = [eq(sessions.refreshHash, hash), gt(sessions.refreshExpiresAt, nowIso), ...originClause(callOpts.origin)];
+
+      // Whose session this is, checked BEFORE anything is issued. isUserActive is
+      // the caller's predicate over the user row, so it cannot go in the WHERE;
+      // the single-use guarantee is unaffected, because the UPDATE below still
+      // consumes the hash atomically.
+      const found = await db
+        .select({ u: getTableColumns(users) })
+        .from(sessions)
+        .innerJoin(users, eq(sessions.userId, users.id))
+        .where(and(...live))
+        .limit(1);
+      const u = found[0]?.u as Record<string, unknown> | undefined;
+      if (!u || !isUserActive(u)) return null;
+
+      const accessToken = newToken(accessPrefix);
+      const nextRefreshToken = newToken(refreshPrefix);
       const rotated = await db
         .update(sessions)
         .set({
@@ -147,7 +181,7 @@ export function createSessionStore(opts: {
           refreshExpiresAt: new Date(now + refreshTtlMs).toISOString(),
           lastUsedAt: nowIso,
         })
-        .where(and(eq(sessions.refreshHash, sha256(refreshToken)), gt(sessions.refreshExpiresAt, nowIso)))
+        .where(and(...live))
         .returning({ id: sessions.id });
       if (!rotated.length) return null;
 
@@ -163,13 +197,6 @@ export function createSessionStore(opts: {
 
     async resolveUser(accessToken, callOpts = {}) {
       if (!isAccessToken(accessToken)) return null;
-      const scope = callOpts.origin;
-      const originCond =
-        scope === undefined
-          ? undefined
-          : 'equals' in scope
-            ? eq(sessions.origin, scope.equals)
-            : ne(sessions.origin, scope.not);
       const rows = await db
         .select({ u: getTableColumns(users) })
         .from(sessions)
@@ -178,7 +205,7 @@ export function createSessionStore(opts: {
           and(
             eq(sessions.accessHash, sha256(accessToken)),
             gt(sessions.accessExpiresAt, new Date().toISOString()),
-            ...(originCond ? [originCond] : [])
+            ...originClause(callOpts.origin)
           )
         )
         .limit(1);
@@ -188,15 +215,11 @@ export function createSessionStore(opts: {
     },
 
     async revoke(tokens) {
-      try {
-        if (tokens.accessToken && isAccessToken(tokens.accessToken)) {
-          await db.delete(sessions).where(eq(sessions.accessHash, sha256(tokens.accessToken)));
-        } else if (tokens.refreshToken && isRefreshToken(tokens.refreshToken)) {
-          await db.delete(sessions).where(eq(sessions.refreshHash, sha256(tokens.refreshToken)));
-        }
-      } catch (e) {
-        console.error('session revoke failed:', e);
-      }
+      const byEither = [];
+      if (tokens.accessToken && isAccessToken(tokens.accessToken)) byEither.push(eq(sessions.accessHash, sha256(tokens.accessToken)));
+      if (tokens.refreshToken && isRefreshToken(tokens.refreshToken)) byEither.push(eq(sessions.refreshHash, sha256(tokens.refreshToken)));
+      if (!byEither.length) return;
+      await db.delete(sessions).where(byEither.length === 1 ? byEither[0] : or(...byEither));
     },
 
     async revokeAllForUser(userId, callOpts = {}) {

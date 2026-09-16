@@ -2,7 +2,8 @@
 
 import { useState } from 'react';
 import type { ResolvedField, ResolvedRelated } from '../server/resolver.js';
-import type { FilterOp } from '../view.js';
+import { linksFor, type FilterOp } from '../view.js';
+import { fromLocalDateTimeInput, toLocalDateTimeInput } from './datetime.js';
 import { useAdminForm, useAdminList, type AdminClientConfig, type UseAdminListResult } from './hooks.js';
 
 /**
@@ -31,6 +32,31 @@ import { useAdminForm, useAdminList, type AdminClientConfig, type UseAdminListRe
  */
 
 const idFor = (view: string, key: string) => `allodium-${view}-${key}`;
+
+/* -------------------------------- links -------------------------------- */
+
+/**
+ * A link out of the admin, rendered for one row.
+ *
+ * It sits inside a clickable row, so its events stop here: following the link
+ * must not also open the editor, and Enter on a focused link is the link's
+ * keypress, not the row's. A new-tab link severs the opener — a page on the
+ * public site must never get a handle on the back office that opened it.
+ */
+function LinkOut({ label, href, target }: { label: string; href: string; target: '_blank' | '_self' }) {
+  return (
+    <a
+      data-allodium="link"
+      href={href}
+      target={target}
+      rel={target === '_blank' ? 'noopener noreferrer' : undefined}
+      onClick={(e) => e.stopPropagation()}
+      onKeyDown={(e) => e.stopPropagation()}
+    >
+      {label}
+    </a>
+  );
+}
 
 /* ------------------------------- inputs -------------------------------- */
 
@@ -84,8 +110,8 @@ function FieldInput({
         <input
           {...common}
           type="datetime-local"
-          value={str.slice(0, 16)}
-          onChange={(e) => onChange(e.target.value ? new Date(e.target.value).toISOString() : null)}
+          value={toLocalDateTimeInput(value)}
+          onChange={(e) => onChange(fromLocalDateTimeInput(e.target.value))}
         />
       );
 
@@ -245,6 +271,10 @@ export function AdminForm({
   }
 
   const formFields = view.fields.filter((f) => f.in.includes('form'));
+  // Links resolve against the SAVED row, never the draft: a slug typed into the
+  // form is not an address until it has been saved. A new record has no row, so
+  // it has no links.
+  const formLinks = id !== undefined && id !== null ? linksFor(view.links, form.row ?? {}, 'form') : [];
 
   return (
     <>
@@ -260,6 +290,13 @@ export function AdminForm({
       <header data-allodium="form-header">
         <h1>{view.title}</h1>
         {view.description && <p data-allodium="description">{view.description}</p>}
+        {formLinks.length > 0 && (
+          <nav data-allodium="links" aria-label="Links">
+            {formLinks.map((l) => (
+              <LinkOut key={l.label + l.href} {...l} />
+            ))}
+          </nav>
+        )}
       </header>
 
       {view.warnings?.length > 0 && (
@@ -674,6 +711,10 @@ export function AdminList({
     .map((key) => view.fields.find((f) => f.key === key))
     .filter((f): f is ResolvedField => !!f)
     .filter((f) => !hideColumns?.includes(f.key));
+  // One trailing cell for links, present when the view declares any for the
+  // list — even on rows where none applies, so the columns line up.
+  const hasLinks = (view.links ?? []).some((l) => l.in.includes('list'));
+  const span = columns.length + (hasLinks ? 1 : 0);
 
   return (
     <div data-allodium="list" data-view={view.table}>
@@ -708,12 +749,17 @@ export function AdminList({
                 </button>
               </th>
             ))}
+            {hasLinks && (
+              <th data-allodium="links-header">
+                <span>Links</span>
+              </th>
+            )}
           </tr>
         </thead>
         <tbody>
           {rows.length === 0 && !loading ? (
             <tr>
-              <td colSpan={columns.length} data-allodium="empty">
+              <td colSpan={span} data-allodium="empty">
                 Nothing here yet.
               </td>
             </tr>
@@ -756,6 +802,13 @@ export function AdminList({
                       </td>
                     );
                   })}
+                  {hasLinks && (
+                    <td data-allodium="links">
+                      {linksFor(view.links, row, 'list').map((l) => (
+                        <LinkOut key={l.label + l.href} {...l} />
+                      ))}
+                    </td>
+                  )}
                 </tr>
               );
             })

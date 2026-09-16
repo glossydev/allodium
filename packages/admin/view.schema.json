@@ -55,9 +55,64 @@
         "$ref": "#/definitions/relatedList"
       },
       "description": "Panels of related rows shown on the record screen."
+    },
+    "links": {
+      "type": "array",
+      "items": {
+        "$ref": "#/definitions/link"
+      },
+      "description": "Links out of the admin derived from the row — \"View on site\", \"Preview\" — shown on list rows and the record screen."
     }
   },
   "definitions": {
+    "link": {
+      "type": "object",
+      "required": [
+        "label",
+        "href"
+      ],
+      "additionalProperties": false,
+      "description": "One link out of the admin. A URL template over the row's fields and an optional condition; never code.",
+      "properties": {
+        "label": {
+          "type": "string",
+          "minLength": 1,
+          "description": "The link's text."
+        },
+        "href": {
+          "type": "string",
+          "pattern": "^(/(?!/)|[Hh][Tt][Tt][Pp][Ss]?://)",
+          "description": "A template over the row's fields, e.g. \"/blog/{slug}\". Values are URL-encoded as substituted. Must be a path starting with \"/\" or an absolute http(s) URL. A row whose placeholder is empty renders no link.",
+          "examples": [
+            "/blog/{slug}",
+            "/preview/posts/{id}",
+            "https://example.com/work/{slug}"
+          ]
+        },
+        "when": {
+          "$ref": "#/definitions/filter",
+          "description": "Show only for rows matching every predicate — published ones, say — so a draft is not offered a public address that 404s."
+        },
+        "target": {
+          "enum": [
+            "_blank",
+            "_self"
+          ],
+          "description": "Open in a new tab (_blank) or the same one. Defaults to the same tab."
+        },
+        "in": {
+          "type": "array",
+          "description": "Where the link appears. Defaults to both.",
+          "items": {
+            "enum": [
+              "list",
+              "form"
+            ]
+          },
+          "uniqueItems": true
+        }
+      }
+    },
     "field": {
       "description": "A column, a foreign key, or a many-to-many.",
       "oneOf": [

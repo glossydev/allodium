@@ -198,7 +198,7 @@ try {
   ok('relation.filter takes operators too', ranged.length === rangedN, `${ranged.length} vs ${rangedN}`);
 
   // Filter AND search, not one replacing the other.
-  const both2 = await resolver.options(rel([{ column: 'id', op: 'lte', value: 5 }]), 'customer_id', firstName);
+  const both2 = await resolver.options(rel([{ column: 'id', op: 'lte', value: 5 }]), 'customer_id', { search: firstName });
   ok('relation.filter and the option search combine', both2.length <= ranged.length && both2.every((o) => o.label === firstName));
 
   // The skip path: a predicate naming a column the target lacks must warn, not

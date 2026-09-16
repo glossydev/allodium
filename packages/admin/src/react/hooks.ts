@@ -245,6 +245,11 @@ export function useAdminList(config: AdminClientConfig): UseAdminListResult {
 export interface UseAdminFormResult {
   view: ResolvedView | null;
   values: Record<string, unknown>;
+  /**
+   * The record as last SAVED — what links and anything else that must not
+   * follow an unsaved edit resolve against. Null for a new record.
+   */
+  row: Record<string, unknown> | null;
   setValue(key: string, value: unknown): void;
   /** Options for a relation or m2m field, loaded on demand. */
   optionsFor(key: string): { value: unknown; label: string }[];
@@ -378,6 +383,7 @@ export function useAdminForm(config: AdminClientConfig & { id?: string | number 
   return {
     view,
     values,
+    row: isNew ? null : initial,
     setValue,
     optionsFor: (key) => options[key] ?? [],
     dirty,

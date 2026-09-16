@@ -12,7 +12,7 @@
     "test": "node --experimental-strip-types test/serializer.mjs"
   },
   "dependencies": {
-    "@allodium/admin": "^0.2.0",
+    "@allodium/admin": "^0.3.0",
     "@allodium/db": "^0.2.0",
     "@allodium/storage": "^0.2.0",
     "drizzle-orm": "^0.45.0",

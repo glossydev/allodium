@@ -120,6 +120,40 @@ export function createAdminRoutes(opts: AdminRoutesOptions): AdminRoutes {
     return 500;
   };
 
+  /**
+   * The cross-site request forgery check, for every write.
+   *
+   * CORS headers decide whether a script may READ a response; the request and
+   * its cookies have already arrived by then. SameSite cookies cover most of
+   * the gap but not sibling subdomains, which is how a site and its back office
+   * are usually deployed. So a write whose Origin is neither this host nor on
+   * the allowlist is refused, a body not typed as JSON is refused (a cross-site
+   * form cannot send that type without a preflight), and a request the browser
+   * itself labels cross-site is refused. Only the host of the origin is
+   * compared, not the scheme, because behind a reverse proxy the handler sees
+   * http where the browser sent https.
+   *
+   * Declared here as well as in @allodium/auth, on purpose: neither package
+   * imports the other, and both need it.
+   */
+  const crossSiteWrite = (request: Request): { status: number; message: string } | null => {
+    const origin = request.headers.get('origin');
+    if (origin) {
+      let sameHost = false;
+      try {
+        sameHost = new URL(origin).host === new URL(request.url).host;
+      } catch {
+        /* an unparseable Origin is not this host */
+      }
+      if (!sameHost && !originAllowed(origin)) return { status: 403, message: `Cross-origin request from ${origin} refused` };
+    } else if (request.headers.get('sec-fetch-site') === 'cross-site') {
+      return { status: 403, message: 'Cross-site request refused' };
+    }
+    const type = request.headers.get('content-type');
+    if (type && !/^\s*application\/json\b/i.test(type)) return { status: 415, message: 'Expected application/json' };
+    return null;
+  };
+
   async function body(request: Request): Promise<Record<string, unknown> | null> {
     try {
       const parsed: unknown = await request.json();
@@ -159,6 +193,10 @@ export function createAdminRoutes(opts: AdminRoutesOptions): AdminRoutes {
 
     async handle(request, segments) {
       if (request.method === 'OPTIONS') return this.preflight(request);
+      if (request.method !== 'GET' && request.method !== 'HEAD') {
+        const refused = crossSiteWrite(request);
+        if (refused) return fail(request, refused.message, refused.status);
+      }
 
       const [name, kind, third] = segments.map((s) => decodeURIComponent(s));
       if (!name || !kind) return fail(request, 'Not found', 404);
@@ -240,8 +278,11 @@ export function createAdminRoutes(opts: AdminRoutesOptions): AdminRoutes {
             const view = await resolver.resolve(def);
             const field = view.fields.find((f) => f.key === third);
             if (!field?.source) return fail(request, `No relation field "${third}"`, 404);
+            // The table-level answer is thrown here; the row-level scope of that
+            // grant is applied inside options(), so a picker over a table the
+            // actor may only partly read offers only the part.
             await resolver.authorize({ table: field.source.table }, 'read', actor);
-            return json(request, { options: await resolver.options(def, third, q.get('search') ?? undefined) });
+            return json(request, { options: await resolver.options(def, third, { search: q.get('search') ?? undefined, actor }) });
           }
 
           default:

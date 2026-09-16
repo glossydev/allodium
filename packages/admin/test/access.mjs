@@ -165,6 +165,49 @@ if (!process.env.DATABASE_URL) {
       try { await p.list({ table: 'orders' }, { actor: actor(['m']), pageSize: 1 }); } catch { worked = false; }
       ok(`auth's "${op}" compiles in the resolver`, worked);
     }
+
+    /* -------- the other table: pickers and labels are reads of it -------- */
+    // orders.customer_id points at customers. A rep may read every order but
+    // only ONE customer — theirs. The picker must offer that one, and the
+    // orders list must label only that one; every other order's customer name
+    // is a read of a row the rep was not granted.
+    const ordersView = { table: 'orders', fields: [{ column: 'id' }, { kind: 'relation', column: 'customer_id', relation: { table: 'customers', display: 'full_name' } }, { column: 'total' }] };
+    const [{ n: allCustomers }] = await raw('select count(*)::int as n from customers');
+    const repActor = actor(['rep'], { customerId: customer.customer_id });
+    const repPolicy = createViewResolver(pool, {
+      access: createAccessPolicy([
+        grant('rep', 'orders', ['read']),
+        grant('rep', 'customers', ['read'], [{ column: 'id', op: 'eq', value: '$actor.customerId' }]),
+        grant('blind', 'orders', ['read']),
+      ]),
+    });
+    const picks = await repPolicy.options(ordersView, 'customer_id', { actor: repActor });
+    ok('a picker offers only the rows the actor may read', picks.length === 1 && String(picks[0].value) === String(customer.customer_id), JSON.stringify(picks).slice(0, 120));
+    ok('...which is fewer than the table holds', allCustomers > 1);
+    ok('a picker with no grant on the target is refused', await refuses(() => repPolicy.options(ordersView, 'customer_id', { actor: actor(['blind']) })));
+    ok('a picker without an actor is refused', await refuses(() => repPolicy.options(ordersView, 'customer_id'), /needs an actor/));
+    const searched = await repPolicy.options(ordersView, 'customer_id', { actor: repActor, search: 'zzzz-no-such-name' });
+    ok('the search ANDs with the scope rather than replacing it', searched.length === 0);
+
+    const labelled = await repPolicy.list(ordersView, { actor: repActor, pageSize: 200 });
+    ok('the list still returns every order the actor may read', labelled.total === allOrders);
+    ok('...labelling only the customer they may read', labelled.rows.every((r) => (String(r.customer_id) === String(customer.customer_id)) === (r.customer_id__label !== null)), JSON.stringify(labelled.rows.slice(0, 3)));
+    ok('...and the label is really a name, not the id', labelled.rows.some((r) => typeof r.customer_id__label === 'string' && r.customer_id__label !== String(r.customer_id)));
+    const blindList = await repPolicy.list(ordersView, { actor: actor(['blind']), pageSize: 5 });
+    ok('with no grant on the target, the label is absent, not the row', blindList.total === allOrders && blindList.rows.every((r) => !('customer_id__label' in r)));
+    const blindRead = await repPolicy.read(ordersView, own.id, actor(['blind']));
+    ok('...on a record too', blindRead !== null && !('customer_id__label' in blindRead) && 'customer_id' in blindRead);
+    const repRead = await repPolicy.read(ordersView, own.id, repActor);
+    ok('a record labels the customer the actor may read', typeof repRead?.customer_id__label === 'string');
+    const otherRead = await repPolicy.read(ordersView, other.id, repActor);
+    ok("...and not someone else's", otherRead !== null && otherRead.customer_id__label === null);
+    // Sorting and searching by the label still work under a scope, and the
+    // count query survives the bound parameters the join now carries.
+    const sorted = await repPolicy.list(ordersView, { actor: repActor, sort: 'customer_id', direction: 'asc', pageSize: 3 });
+    ok('sorting by a scoped label works', sorted.rows.length === 3 && sorted.total === allOrders);
+    const found = await repPolicy.list({ ...ordersView, list: { searchColumns: ['customer_id'] } }, { actor: repActor, search: String(repRead.customer_id__label).split(' ')[0], pageSize: 200 });
+    ok('searching a scoped label finds only what the actor may see', found.total > 0 && found.rows.every((r) => String(r.customer_id) === String(customer.customer_id)), `${found.total}`);
+    ok('the console lane is unaffected', (await open.list(ordersView, { pageSize: 2 })).rows.every((r) => 'customer_id__label' in r));
   } finally {
     await pool.end();
   }

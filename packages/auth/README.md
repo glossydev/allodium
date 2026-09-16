@@ -26,6 +26,8 @@ Requires Node 20+ and PostgreSQL.
 | **Cookies** | `createSessionCookies` — the access/refresh/CSRF triple, with Domain-correct clearing (the bug where a cookie "won't delete" is almost always this). |
 | **Reset tokens** | `createResetTokens` — stateless HMAC, keyed partly on the user's *current* password hash, so a successful reset invalidates every outstanding token with no bookkeeping. |
 | **Rate limiting** | `createRateLimiter` — sliding window, in-process, fail-open. |
+| **Routes** | `createAuthRoutes` — login, logout, refresh and me as Web `Request → Response` handlers, with the details that are easy to get wrong already right. |
+| **Grants** | `createAccessPolicy` / `createGrantLoader` — role × table × action, with optional row filters (`customer_id = $actor.customerId`). What `@allodium/admin` enforces. |
 | **[Act as](../../docs/act-as.md)** | `createActAs` — resolve the app as another user for testing and support, without replacing your session. |
 
 ## Sessions in one screen
@@ -35,19 +37,71 @@ import { createSessionStore, createSessionCookies } from '@allodium/auth';
 
 export const sessions = createSessionStore({
   db,                       // your Drizzle instance
-  table: sessionsTable,     // your sessions table
+  sessions: sessionsTable,  // your sessions table — the shape is in sessions.ts
   users: usersTable,
+  accessPrefix: 'app_at_',  // how these tokens are recognised; unique to your app
+  refreshPrefix: 'app_rt_',
   isUserActive: (u) => u.status === 'active',
 });
 
-const minted = await sessions.mint(user.id, { origin: 'web' });
-const who = await sessions.resolve(accessToken, { origin: { equals: 'web' } });
-const next = await sessions.refresh(refreshToken);   // single-use; races have one winner
+const minted = await sessions.mint({ userId: user.id, origin: 'web' });
+const who = await sessions.resolveUser(accessToken, { origin: { equals: 'web' } });
+const next = await sessions.rotate(refreshToken, { origin: { equals: 'web' } });   // single-use; races have one winner
+await sessions.revoke({ accessToken, refreshToken });                              // logout: by either token
 ```
 
 The refresh rotation consumes the old token in the same statement that issues the new
 one, so two tabs refreshing simultaneously produce exactly one winner rather than two
-valid sessions or zero.
+valid sessions or zero. Rotation also refuses a session whose user is no longer active
+and, when scoped, one minted for another surface — a suspended account cannot keep its
+session alive by refreshing. Revocation matches **either** token, because after a
+rotation in another tab the access cookie is stale while the refresh cookie is live, and
+revoking by the first one found would delete nothing.
+
+## The four routes
+
+```ts
+import { createAuthRoutes, createRateLimiter, readCookie, PUBLIC_ACTOR } from '@allodium/auth';
+
+export const auth = createAuthRoutes({
+  sessions,
+  cookies: createSessionCookies({ names: { access: 'at', refresh: 'rt', expires: 'exp' }, maxAgeSec: 7 * 86400, secure: true }),
+  origin: 'web',                                   // the surface these sessions belong to
+  findUserByEmail: (email) => /* { id, passwordHash, status } | null */,
+  toPublicUser: (row) => ({ id: row.id, email: row.email }),   // REQUIRED: what /me may say
+  actorFor: (id) => grants.actorFor(id, claims),   // optional: roles + claims on /me
+  rateLimit: createRateLimiter(),
+  allowOrigins: ['https://app.example.com'],       // omit for same-origin
+});
+
+// Next.js: app/api/auth/[action]/route.ts → auth.login(req) / auth.logout(req) / auth.refresh(req) / auth.me(req)
+```
+
+What they get right so you do not have to: a wrong password and an unknown email answer
+identically, in the same time; `/me` returns only what `toPublicUser` says; a lost
+refresh race does not clear the winner's cookies; logout clears cookies only once the
+session is actually gone (a 500 with cookies intact otherwise); and a POST from an origin
+that is neither this host nor allowlisted, or with a body not typed as JSON, is refused
+— CORS headers say who may read a response, not who may send a request.
+
+## Grants
+
+```ts
+const grants = createGrantLoader(pool);            // reads roles / user_roles / role_permissions
+const policy = await grants.policy();              // cached 30 s; grants.refresh() after editing
+const actor = await grants.actorFor(userId, { customerId: 42 });
+
+policy.can(actor, 'orders', 'read');
+// → { allowed: true, scope: [{ column: 'customer_id', op: 'eq', value: 42 }], reason: '…' }
+policy.can(PUBLIC_ACTOR, 'orders', 'read');
+// → { allowed: false, scope: [], reason: 'no grant for read on orders (holding: public)' }
+```
+
+A `row_filter` on a grant is a JSON array of predicates; `$actor.<claim>` substitutes a
+claim the app supplied, and a missing claim **denies**. So does a filter that cannot be
+read — `{}` where `[]` was meant — which refuses the whole grant rather than quietly
+widening it to every row. `policy.problems` lists what was refused and why. A
+`super_admin` role bypasses the model by name and holds no rows.
 
 ## Act as (user switching)
 
@@ -91,8 +145,10 @@ and tested.
 ## Testing
 
 ```bash
-node packages/auth/test/integration.mjs   # 36 checks, needs DATABASE_URL
+npm test -w packages/auth                 # the whole battery; the database-backed files skip without DATABASE_URL
+node packages/auth/test/integration.mjs   # sessions, needs DATABASE_URL
 node packages/auth/test/act-as.mjs        # 42 checks, no database needed
+node packages/auth/test/loader.mjs        # the grant loader fails closed, no database needed
 ```
 
 The integration battery runs against a real PostgreSQL because that is where the

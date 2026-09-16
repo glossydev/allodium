@@ -154,6 +154,25 @@ if (!process.env.DATABASE_URL) {
     ok('a filter on an unknown field is 400, not 500', (await call('GET', ['posts', 'list'], { query: 'filter=nope:eq:1' })).status === 400);
     ok('invalid JSON on a write is 400', (await routes.handle(new Request('http://api.test/posts/record', { method: 'POST', headers: { 'x-actor': JSON.stringify(support), 'Content-Type': 'application/json' }, body: '{nope' }), ['posts', 'record'])).status === 400);
 
+    /* ---------------------- cross-site request forgery ---------------------- */
+    // CORS headers say who may READ a response. These say who may SEND a write.
+    const forged = (headers, extra = {}) => call('PATCH', ['orders', 'record', String(other.id)], { actor: support, body: { notes: 'csrf' }, headers, ...extra });
+    ok('a write from an unlisted origin is refused', (await forged({ origin: 'http://evil.test' })).status === 403);
+    ok('...before any grant is consulted', /Cross-origin/.test((await jsonOf(await forged({ origin: 'http://evil.test' })))?.error ?? ''));
+    ok('a write the browser labels cross-site is refused', (await forged({ 'sec-fetch-site': 'cross-site' })).status === 403);
+    const formPost = await routes.handle(
+      new Request('http://api.test/orders/record/' + other.id, { method: 'PATCH', headers: { 'x-actor': JSON.stringify(support), 'Content-Type': 'application/x-www-form-urlencoded' }, body: 'notes=csrf' }),
+      ['orders', 'record', String(other.id)]
+    );
+    ok('a form-encoded body is refused as 415', formPost.status === 415, String(formPost.status));
+    ok('the refused writes changed nothing', (await raw('select notes from orders where id = $1', [other.id]))[0].notes !== 'csrf');
+    ok('a write from an allowlisted origin passes', (await forged({ origin: 'http://localhost:3191' })).status === 200);
+    ok('a write from this host passes', (await forged({ origin: 'http://api.test' })).status === 200);
+    ok('...whatever the scheme', (await forged({ origin: 'https://api.test' })).status === 200);
+    ok('a same-site write passes', (await forged({ 'sec-fetch-site': 'same-site', origin: 'http://localhost:3191' })).status === 200);
+    ok('a read from an unlisted origin is still answered (CORS hides it, not this)', (await call('GET', ['posts', 'list'], { headers: { origin: 'http://evil.test' } })).status === 200);
+    await raw('update orders set notes = $2 where id = $1', [other.id, before]);
+
     const corsRes = await call('GET', ['posts', 'list'], { headers: { origin: 'http://localhost:3191' } });
     ok('an allowed origin gets its exact origin back', corsRes.headers.get('access-control-allow-origin') === 'http://localhost:3191');
     ok('...with credentials and Vary', corsRes.headers.get('access-control-allow-credentials') === 'true' && corsRes.headers.get('vary') === 'Origin');

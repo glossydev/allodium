@@ -69,6 +69,15 @@ export interface ResolvedRelated {
   pageSize: number;
 }
 
+/** A link with its condition normalized and its defaults filled — what the client renders from. */
+export interface ResolvedLink {
+  label: string;
+  href: string;
+  when: Predicate[];
+  target: '_blank' | '_self';
+  in: ('list' | 'form')[];
+}
+
 export interface ResolvedView {
   table: string;
   title: string;
@@ -83,6 +92,8 @@ export interface ResolvedView {
   fields: ResolvedField[];
   /** Related-row panels, in the order they should appear. */
   related: ResolvedRelated[];
+  /** Links out of the admin, rendered per row by the client. */
+  links: ResolvedLink[];
   list: { columns: string[]; pageSize: number; sort: { column: string; direction: 'asc' | 'desc' }; searchColumns: string[]; filter: Predicate[] };
   /**
    * Definitions that resolve but would render something useless — a select with no
@@ -214,8 +225,8 @@ export interface ViewResolver {
   create(def: ViewDefinition, values: Record<string, unknown>, actor?: unknown): Promise<Record<string, unknown>>;
   update(def: ViewDefinition, id: unknown, values: Record<string, unknown>, actor?: unknown): Promise<Record<string, unknown>>;
   remove(def: ViewDefinition, id: unknown, actor?: unknown): Promise<void>;
-  /** Selectable rows for a relation/m2m field. */
-  options(def: ViewDefinition, fieldKeyName: string, search?: string, limit?: number): Promise<{ value: unknown; label: string }[]>;
+  /** Selectable rows for a relation/m2m field — a read of the TARGET table, gated and row-scoped for the actor. */
+  options(def: ViewDefinition, fieldKeyName: string, opts?: { search?: string; limit?: number; actor?: unknown }): Promise<{ value: unknown; label: string }[]>;
   /**
    * The gate alone: throws "Not permitted" or returns the granted row scope.
    * For callers that need the decision before doing anything — a route deciding
@@ -264,6 +275,28 @@ export function createViewResolver(
       if (p.op !== undefined && !FILTER_OPS.includes(p.op as FilterOp)) {
         throw err(`Not permitted: the grant for ${action} on ${table} uses an unsupported comparison "${p.op}"`);
       }
+    }
+    return decision.scope as Predicate[];
+  };
+
+  /**
+   * The rows of a relation's target an actor may see, as a scope — or null when
+   * none, in which case the label is left out and the foreign key stands alone.
+   *
+   * Non-throwing on purpose, unlike the gate: a label is decoration on a row the
+   * actor IS allowed to read. "You may not see the other table" therefore hides
+   * the decoration rather than refusing the row — but it does hide it, because
+   * a joined name is a read of that other table by another route, and a grant
+   * restricting customers to your own must not print every customer's name down
+   * an orders list.
+   */
+  const labelScope = (actor: unknown, table: string): Predicate[] | null => {
+    if (access === 'unrestricted') return [];
+    if (actor === undefined || actor === null) return null;
+    const decision = access.can(actor, table, 'read');
+    if (!decision.allowed) return null;
+    for (const p of decision.scope) {
+      if (p.op !== undefined && !FILTER_OPS.includes(p.op as FilterOp)) return null;
     }
     return decision.scope as Predicate[];
   };
@@ -558,6 +591,28 @@ export function createViewResolver(
       seenRelated.add(r.key);
     }
 
+    // A link is a template over the row, so every placeholder and every
+    // condition has to name something the row will actually carry — a visible
+    // column, a field key, or a relation's label. One that does not would
+    // render no link on any row and never say why.
+    const carried = new Set<string>([
+      ...visibleColumns(meta).map((c) => c.name),
+      ...fields.map((f) => f.key),
+      ...fields.filter((f) => f.kind === 'relation').map((f) => `${f.key}__label`),
+    ]);
+    const links: ResolvedLink[] = (def.links ?? []).map((l, i) => {
+      const at = `links[${i}] ("${l.label}")`;
+      for (const m of l.href.matchAll(/\{([^}]+)\}/g)) {
+        const key = m[1].trim();
+        if (!carried.has(key)) warnings.push(`${at} uses {${key}}, which is not a column or field on this view — the link will never render.`);
+      }
+      const when = normalizeFilter(l.when);
+      for (const p of when) {
+        if (!carried.has(p.column)) warnings.push(`${at} conditions on "${p.column}", which is not a column or field on this view — the link will never render.`);
+      }
+      return { label: l.label, href: l.href, when, target: l.target ?? '_self', in: l.in ?? ['list', 'form'] };
+    });
+
     return {
       table: def.table,
       title: def.title ?? humanize(def.table),
@@ -568,6 +623,7 @@ export function createViewResolver(
       display: def.display,
       fields,
       related,
+      links,
       warnings,
       list: {
         columns: def.list?.columns ?? listable.slice(0, 6).map((f) => f.key),
@@ -591,7 +647,14 @@ export function createViewResolver(
    * as `<column>__label`. One round trip per screen rather than one per row per
    * relation, which is the N+1 that makes generated admins feel slow.
    */
-  function selectWithLabels(view: ResolvedView, meta: TableMeta, relationDisplays: Map<string, { table: string; value: string; display?: string; targetPk: string; displayCols: string[] }>) {
+  type RelationSource = { table: string; value: string; display?: string; targetPk: string; displayCols: string[]; meta: TableMeta };
+
+  /**
+   * `params` is shared with the caller's WHERE clause: a label join carries the
+   * actor's row scope on the target as bound parameters, and parameter numbers
+   * are by push order, so the join binds first and the clauses continue from it.
+   */
+  function selectWithLabels(view: ResolvedView, meta: TableMeta, relationDisplays: Map<string, RelationSource>, actor: unknown, params: unknown[]) {
     // Every column the caller may see — NOT `meta.columns`. Selecting the whole table
     // and trusting the view to have declared only safe fields is how a password hash
     // reaches the client without any view mentioning it.
@@ -608,7 +671,24 @@ export function createViewResolver(
       if (f.kind !== 'relation' || !f.column) continue;
       const src = relationDisplays.get(f.key);
       if (!src) continue;
+      // What the actor may see of the target decides whether there is a label at
+      // all, and for which rows. The scope goes INTO the join condition, so a row
+      // outside it labels as null — the same shape as a dangling foreign key.
+      const scope = labelScope(actor, src.table);
+      if (scope === null) continue;
       const alias = `r${i++}`;
+      const on = [`${alias}.${qid(src.value)} = t.${qid(f.column)}`];
+      let scopable = true;
+      for (const p of scope) {
+        const col = src.meta.columns.find((c) => c.name === p.column);
+        if (!col) {
+          scopable = false; // a grant naming a column the target lacks: closed, so no label
+          break;
+        }
+        const sql = predicateSql(p, `${alias}.${qid(col.name)}`, params);
+        if (sql) on.push(sql);
+      }
+      if (!scopable) continue;
       const cols = src.displayCols;
       const expr = cols.length
         ? cols.length === 1
@@ -616,14 +696,14 @@ export function createViewResolver(
           : `concat_ws(' ', ${cols.map((c) => `${alias}.${qid(c)}::text`).join(', ')})`
         : `${alias}.${qid(src.value)}::text`;
       base.push(`${expr} as ${qid(f.key + '__label')}`);
-      joins.push(`left join ${qid(src.table)} ${alias} on ${alias}.${qid(src.value)} = t.${qid(f.column)}`);
+      joins.push(`left join ${qid(src.table)} ${alias} on ${on.join(' and ')}`);
       labelExpr.set(f.key, expr);
     }
     return { select: base.join(', '), join: joins.join('\n'), labelExpr };
   }
 
   async function relationSources(view: ResolvedView) {
-    const m = new Map<string, { table: string; value: string; display?: string; targetPk: string; displayCols: string[] }>();
+    const m = new Map<string, RelationSource>();
     for (const f of view.fields) {
       if (!f.source) continue;
       const target = await tableOrThrow(f.source.table);
@@ -632,6 +712,7 @@ export function createViewResolver(
         value: f.source.value,
         display: f.source.display,
         targetPk: target.primaryKey ?? f.source.value,
+        meta: target,
         // Resolved here rather than in selectWithLabels because this is where the
         // target's metadata is in hand. Filtered on both existence and masking: the
         // label is selected, sorted and searched, so a masked column reaching it is
@@ -648,7 +729,12 @@ export function createViewResolver(
     const view = await resolve(def);
     const meta = await tableOrThrow(def.table);
     const sources = await relationSources(view);
-    const { select, join, labelExpr } = selectWithLabels(view, meta, sources);
+    // Parameters bind in one sequence: the label joins' scopes first, then the
+    // clauses below in order. Everything numbers itself by push, so the array is
+    // shared rather than merged.
+    const params: unknown[] = [];
+    const { select, join, labelExpr } = selectWithLabels(view, meta, sources, o.actor, params);
+    const joinHasParams = params.length > 0;
 
     const page = Math.max(1, o.page ?? 1);
     const pageSize = Math.min(200, Math.max(1, o.pageSize ?? view.list.pageSize));
@@ -688,7 +774,6 @@ export function createViewResolver(
 
     // Clauses are ANDed and built in one pass so the parameter numbers stay in
     // step: the baseline filter binds first, then the operator's, then search.
-    const params: unknown[] = [];
     const clauses: string[] = [];
 
     for (const p of view.list.filter) {
@@ -776,7 +861,10 @@ export function createViewResolver(
     // joins onto the referenced column, which is unique for a real foreign key
     // but not guaranteed for a hand-authored relation.value — and a duplicate
     // there would multiply rows and inflate the count.
-    const countJoin = whereReachesThroughJoin ? `\n${join}` : '';
+    // One exception: a join that bound parameters (a scoped label) must be in
+    // the count too, or the count statement is handed values it has no
+    // placeholders for and Postgres refuses to run it.
+    const countJoin = whereReachesThroughJoin || joinHasParams ? `\n${join}` : '';
 
     const [rowsRes, countRes] = await Promise.all([
       db.query(
@@ -816,17 +904,18 @@ export function createViewResolver(
     const view = await resolve(def);
     const meta = await tableOrThrow(def.table);
     const sources = await relationSources(view);
-    const { select, join } = selectWithLabels(view, meta, sources);
+    const params: unknown[] = [];
+    const { select, join } = selectWithLabels(view, meta, sources, actor, params);
 
     // The grant narrows WHICH row this id may address. A row outside it comes
     // back null — the same answer as a row that does not exist, deliberately:
     // "no such order" and "not your order" must not be distinguishable, or the
     // endpoint becomes a way to enumerate other people's ids.
-    const params: unknown[] = [String(id)];
+    const idParam = params.push(String(id));
     const scoped = grantClauses(gate(actor, def.table, 'read'), meta, params);
 
     const res = await db.query(
-      `select ${select} from ${qid(def.table)} t\n${join}\nwhere t.${qid(requirePk(view))}::text = $1${scoped} limit 1`,
+      `select ${select} from ${qid(def.table)} t\n${join}\nwhere t.${qid(requirePk(view))}::text = $${idParam}${scoped} limit 1`,
       params
     );
     const row = res.rows[0] as Record<string, unknown> | undefined;
@@ -846,11 +935,21 @@ export function createViewResolver(
     return row;
   }
 
-  async function options(def: ViewDefinition, key: string, search?: string, limit = 100) {
+  /**
+   * Rows of a relation's target, as a picker offers them.
+   *
+   * Gated as a read OF THE TARGET, row scope included: an operator who may read
+   * only their own customer must not be offered every customer in a dropdown,
+   * which is a list of the table by another route. The route checks the
+   * table-level answer first so a refusal is a 403 rather than an empty menu.
+   */
+  async function options(def: ViewDefinition, key: string, o: { search?: string; limit?: number; actor?: unknown } = {}) {
+    const { search, limit = 100 } = o;
     const view = await resolve(def);
     const field = view.fields.find((f) => f.key === key);
     if (!field?.source) throw err(`No relation field "${key}"`);
     const target = await tableOrThrow(field.source.table);
+    const granted = gate(o.actor, target.name, 'read');
 
     const display = field.source.display;
     const cols = displayColumns(display);
@@ -868,6 +967,14 @@ export function createViewResolver(
     // the operator narrowing that. Both, ANDed — never one instead of the other.
     const params: unknown[] = [];
     const clauses: string[] = [];
+
+    // The grant's rows first, through its own error path — a grant naming a
+    // column the target does not have is a broken grant, and fails closed.
+    for (const p of granted) {
+      if (!target.columns.some((c) => c.name === p.column)) throw err(`Not permitted: the grant restricts ${target.name}.${p.column}, which does not exist`);
+      const sql = predicateSql(p, qid(p.column), params);
+      if (sql) clauses.push(sql);
+    }
 
     for (const p of field.source.filter ?? []) {
       if (!target.columns.some((c) => c.name === p.column)) continue; // warned at resolve time

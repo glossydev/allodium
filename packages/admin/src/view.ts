@@ -67,6 +67,43 @@ export interface ViewDefinition {
    * human decision, which is why they are listed rather than all rendered.
    */
   related?: RelatedList[];
+
+  /**
+   * Links out of the admin, derived from the row — "View on site", "Preview".
+   *
+   * A screen that edits published content needs a way to the published thing,
+   * and the address is the consumer's to know: `/blog/{slug}` here, something
+   * else there. So the definition carries a URL template and a condition, and
+   * nothing executable: a template is data, round-trips through the builder,
+   * and cannot do anything a string cannot.
+   */
+  links?: ViewLink[];
+}
+
+/**
+ * One link out of the admin, shown on list rows and on the record screen.
+ */
+export interface ViewLink {
+  /** The link's text. */
+  label: string;
+  /**
+   * Where it goes: a template over the row's fields, "/blog/{slug}", with each
+   * value URL-encoded as it is substituted. Must be a path starting with "/" or
+   * an absolute http(s) URL — anything else is refused at validation, so a
+   * definition cannot smuggle a javascript: URL onto an operator's screen. A row
+   * whose placeholder is empty renders no link rather than a broken one.
+   */
+  href: string;
+  /**
+   * Show only for rows matching every predicate — `[{ "column": "status",
+   * "value": "published" }]` — so a draft is not offered a public address that
+   * 404s. The same shape as every other filter in this file.
+   */
+  when?: FilterInput;
+  /** Open in a new tab. Defaults to the same tab. */
+  target?: '_blank' | '_self';
+  /** Where it appears. Defaults to both. */
+  in?: ('list' | 'form')[];
 }
 
 /**
@@ -436,6 +473,88 @@ export function displayColumns(template: string | undefined): string[] {
   return [...template.matchAll(/\{([^}]+)\}/g)].map((m) => m[1].trim());
 }
 
+/* ------------------------------- links -------------------------------- */
+
+/**
+ * A path, or an absolute http(s) URL. Checked on the TEMPLATE, before any
+ * substitution: the scheme is the literal prefix, so a row value can never
+ * supply one. "//evil" is a protocol-relative URL and is refused with the rest.
+ */
+export const isSafeHref = (href: string): boolean => /^(\/(?!\/)|https?:\/\/)/i.test(href.trim());
+
+/**
+ * Whether a row satisfies one predicate — the client-side twin of the SQL the
+ * resolver compiles, with the same semantics: text matches are
+ * case-insensitive, `ne` is true of a null (IS DISTINCT FROM), and the ordered
+ * comparisons compare numbers as numbers when both sides are numeric.
+ */
+export function matchesPredicate(p: Predicate, row: Record<string, unknown>): boolean {
+  const text = (x: unknown) => (x === null || x === undefined ? '' : String(x));
+  const op = p.op ?? (Array.isArray(p.value) ? 'in' : p.value === null ? 'isNull' : 'eq');
+  const v = row[p.column];
+  const absent = v === null || v === undefined;
+  switch (op) {
+    case 'isNull':
+      return absent;
+    case 'notNull':
+      return !absent;
+    case 'eq':
+      return !absent && text(v) === text(p.value);
+    case 'ne':
+      return absent || text(v) !== text(p.value);
+    case 'in':
+      return !absent && Array.isArray(p.value) && p.value.some((x) => text(x) === text(v));
+    case 'contains':
+      return !absent && text(v).toLowerCase().includes(text(p.value).toLowerCase());
+    case 'startsWith':
+      return !absent && text(v).toLowerCase().startsWith(text(p.value).toLowerCase());
+    case 'endsWith':
+      return !absent && text(v).toLowerCase().endsWith(text(p.value).toLowerCase());
+    case 'lt':
+    case 'lte':
+    case 'gt':
+    case 'gte': {
+      if (absent) return false;
+      const a = Number(v);
+      const b = Number(p.value);
+      const numeric = text(v).trim() !== '' && Number.isFinite(a) && Number.isFinite(b);
+      const cmp = numeric ? a - b : text(v).localeCompare(text(p.value));
+      return op === 'lt' ? cmp < 0 : op === 'lte' ? cmp <= 0 : op === 'gt' ? cmp > 0 : cmp >= 0;
+    }
+  }
+}
+
+/**
+ * A link's address for one row, or null when it should not render: the
+ * condition fails, the template is unsafe, or a placeholder has no value
+ * (an unsaved record, a post with no slug yet).
+ */
+export function renderLink(link: ViewLink, row: Record<string, unknown>): string | null {
+  if (!isSafeHref(link.href)) return null;
+  if (!normalizeFilter(link.when).every((p) => matchesPredicate(p, row))) return null;
+  let missing = false;
+  const href = link.href.replace(/\{([^}]+)\}/g, (_, key: string) => {
+    const v = row[key.trim()];
+    if (v === null || v === undefined || v === '') {
+      missing = true;
+      return '';
+    }
+    return encodeURIComponent(String(v));
+  });
+  return missing ? null : href;
+}
+
+/** The links that apply to a row in one place, with their addresses rendered. */
+export function linksFor(links: ViewLink[] | undefined, row: Record<string, unknown>, where: 'list' | 'form'): { label: string; href: string; target: '_blank' | '_self' }[] {
+  const out: { label: string; href: string; target: '_blank' | '_self' }[] = [];
+  for (const l of links ?? []) {
+    if (l.in && !l.in.includes(where)) continue;
+    const href = renderLink(l, row);
+    if (href) out.push({ label: l.label, href, target: l.target ?? '_self' });
+  }
+  return out;
+}
+
 /* ---------------------------- validation ---------------------------- */
 
 export interface ViewProblem {
@@ -488,6 +607,25 @@ export function validateViewDefinition(input: unknown): { ok: true; view: ViewDe
   });
 
   problems.push(...validateFilter(v.list?.filter, 'list.filter'));
+
+  (v.links ?? []).forEach((l, i) => {
+    const at = `links[${i}]`;
+    if (!l || typeof l !== 'object') {
+      problems.push({ path: at, message: 'must be an object' });
+      return;
+    }
+    if (typeof l.label !== 'string' || !l.label.trim()) problems.push({ path: `${at}.label`, message: 'label is required' });
+    if (typeof l.href !== 'string' || !isSafeHref(l.href)) {
+      problems.push({ path: `${at}.href`, message: 'href must be a path starting with "/" or an absolute http(s) URL' });
+    }
+    if (l.target !== undefined && l.target !== '_blank' && l.target !== '_self') {
+      problems.push({ path: `${at}.target`, message: 'target must be "_blank" or "_self"' });
+    }
+    if (l.in !== undefined && (!Array.isArray(l.in) || l.in.some((x) => x !== 'list' && x !== 'form'))) {
+      problems.push({ path: `${at}.in`, message: 'in must be an array of "list" and/or "form"' });
+    }
+    problems.push(...validateFilter(l.when, `${at}.when`));
+  });
 
   return problems.length ? { ok: false, problems } : { ok: true, view: input as ViewDefinition };
 }

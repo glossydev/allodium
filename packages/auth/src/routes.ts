@@ -68,7 +68,7 @@ export interface AuthRoutesOptions {
 export interface AuthRoutes {
   /** POST — { email, password } */
   login(request: Request): Promise<Response>;
-  /** POST — revokes whatever the cookie jar holds, always succeeds. */
+  /** POST — revokes the session by whatever the cookie jar holds. 500 with cookies intact if the revoke itself failed. */
   logout(request: Request): Promise<Response>;
   /** POST — single-use rotation of the refresh cookie. */
   refresh(request: Request): Promise<Response>;
@@ -134,6 +134,47 @@ export function readCookie(request: Request, name: string): string | undefined {
   return undefined;
 }
 
+/**
+ * Refuse a state-changing request that a browser sent from a site this app did
+ * not name — the cross-site request forgery check.
+ *
+ * CORS headers alone do not do this. They decide whether a script may READ the
+ * response; the request itself, cookies and all, has already reached the
+ * handler. SameSite cookies cover most of the gap, but not two surfaces on
+ * sibling subdomains, which are "same site" to a cookie and different origins
+ * to everything else — and that is exactly how a public site and its back
+ * office get deployed.
+ *
+ * Three cheap facts settle it. A browser always sends Origin on a cross-origin
+ * POST, so an Origin that is neither this host nor allowlisted is refused. A
+ * cross-site form cannot set `Content-Type: application/json` without a
+ * preflight, so a body typed as anything else is refused. And modern browsers
+ * label the request's provenance in Sec-Fetch-Site, which catches the case
+ * where Origin is absent. A request with no Origin, no provenance label and no
+ * body — curl, a server, a same-origin fetch — passes.
+ *
+ * Only the HOST of the origin is compared, not the scheme: behind a reverse
+ * proxy the handler sees http://host while the browser sent https://host, and
+ * refusing every write on that mismatch would be a very quiet outage.
+ */
+export function crossSiteWrite(request: Request, originAllowed: (origin: string) => boolean): { status: number; message: string } | null {
+  const origin = request.headers.get('origin');
+  if (origin) {
+    let sameHost = false;
+    try {
+      sameHost = new URL(origin).host === new URL(request.url).host;
+    } catch {
+      /* an unparseable Origin is not this host */
+    }
+    if (!sameHost && !originAllowed(origin)) return { status: 403, message: `Cross-origin request from ${origin} refused` };
+  } else if (request.headers.get('sec-fetch-site') === 'cross-site') {
+    return { status: 403, message: 'Cross-site request refused' };
+  }
+  const type = request.headers.get('content-type');
+  if (type && !/^\s*application\/json\b/i.test(type)) return { status: 415, message: 'Expected application/json' };
+  return null;
+}
+
 /* ------------------------------- factory ------------------------------- */
 
 export function createAuthRoutes(opts: AuthRoutesOptions): AuthRoutes {
@@ -190,6 +231,11 @@ export function createAuthRoutes(opts: AuthRoutesOptions): AuthRoutes {
     },
 
     async login(request) {
+      // Login CSRF is real: a forged sign-in as the attacker's account puts the
+      // victim's later activity in a session the attacker can read.
+      const refused = crossSiteWrite(request, originAllowed);
+      if (refused) return json(request, { error: refused.message }, refused.status);
+
       const { email, password } = (await body(request)) as { email?: string; password?: string };
       if (typeof email !== 'string' || typeof password !== 'string' || !email || !password) {
         return json(request, { error: 'Email and password are required' }, 400);
@@ -239,22 +285,37 @@ export function createAuthRoutes(opts: AuthRoutesOptions): AuthRoutes {
     },
 
     async logout(request) {
+      const refused = crossSiteWrite(request, originAllowed);
+      if (refused) return json(request, { error: refused.message }, refused.status);
+
       const accessToken = readCookie(request, opts.cookies.names.access);
       const refreshToken = readCookie(request, opts.cookies.names.refresh);
-      // Best effort, and 200 regardless: a logout that fails leaves someone
-      // believing they are signed out when they are not, which is worse than a
-      // revoke that was already unnecessary.
-      await opts.sessions.revoke({ accessToken, refreshToken }).catch(() => {});
+      // The cookies are cleared only once the session is gone. Clearing them over
+      // a revoke that failed would leave someone believing they are signed out
+      // while their session lives on in the database — the one outcome a logout
+      // must never produce. A failure here is a 500 with the cookies intact, so
+      // the person sees "try again" rather than a lie.
+      try {
+        await opts.sessions.revoke({ accessToken, refreshToken });
+      } catch {
+        return json(request, { error: 'Sign-out did not complete — try again' }, 500);
+      }
       const jar = headerCookieSetter();
       opts.cookies.clear(jar.setter);
       return json(request, { ok: true }, 200, jar);
     },
 
     async refresh(request) {
+      const refused = crossSiteWrite(request, originAllowed);
+      if (refused) return json(request, { error: refused.message }, refused.status);
+
       const refreshToken = readCookie(request, opts.cookies.names.refresh);
       if (!refreshToken) return json(request, { error: 'No session' }, 401);
 
-      const minted = await opts.sessions.rotate(refreshToken);
+      // Scoped to this surface, as /me is: a refresh cookie carried over from
+      // the other surface must not rotate here and come back wearing this
+      // surface's cookie names.
+      const minted = await opts.sessions.rotate(refreshToken, { origin: { equals: opts.origin } });
       // A 401 here means the token is genuinely spent or unknown. Cookies are NOT
       // cleared: of two concurrent refreshes exactly one wins by design, and
       // clearing on the loser would sign out a perfectly good session.

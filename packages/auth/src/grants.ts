@@ -53,23 +53,33 @@ export interface GrantLoader {
 
 const ident = (n: string) => '"' + n.replaceAll('"', '""') + '"';
 
-/** row_filter arrives as jsonb; anything that is not an array of predicates is ignored loudly. */
-function parseFilter(raw: unknown, where: string, problems: string[]): GrantPredicate[] | undefined {
-  if (raw === null || raw === undefined) return undefined;
+/**
+ * row_filter arrives as jsonb. Null or an empty array means every row; anything
+ * else must be an array of predicates that each name a column.
+ *
+ * A filter that cannot be read FAILS CLOSED: the whole grant is refused, not
+ * widened. The alternative — keep the grant and drop the filter — turns "the
+ * public may read published posts" into "the public may read every post" the
+ * moment somebody saves `{}` instead of `[]`, with nothing but a log line to say
+ * so. That is the failure mode row-level rules exist to prevent, and it is not
+ * one a warning is allowed to stand in for.
+ */
+function parseFilter(raw: unknown, where: string, problems: string[]): { ok: true; filter?: GrantPredicate[] } | { ok: false } {
+  if (raw === null || raw === undefined) return { ok: true };
   const value = typeof raw === 'string' ? safeParse(raw) : raw;
   if (!Array.isArray(value)) {
-    problems.push(`${where}: row_filter is not an array of predicates — ignored, so this grant covers EVERY row.`);
-    return undefined;
+    problems.push(`${where}: row_filter is not an array of predicates — this grant is REFUSED until it is fixed.`);
+    return { ok: false };
   }
   const out: GrantPredicate[] = [];
   for (const p of value) {
-    if (!p || typeof p !== 'object' || typeof (p as GrantPredicate).column !== 'string') {
-      problems.push(`${where}: a row_filter entry has no "column" — ignored.`);
-      continue;
+    if (!p || typeof p !== 'object' || typeof (p as GrantPredicate).column !== 'string' || !(p as GrantPredicate).column.trim()) {
+      problems.push(`${where}: a row_filter entry has no "column" — this grant is REFUSED until it is fixed.`);
+      return { ok: false };
     }
     out.push(p as GrantPredicate);
   }
-  return out.length ? out : undefined;
+  return out.length ? { ok: true, filter: out } : { ok: true };
 }
 
 function safeParse(s: string): unknown {
@@ -99,18 +109,23 @@ export function createGrantLoader(db: Queryable, opts: GrantLoaderOptions = {}):
         order by r.key, g.table_name`
     );
     const problems: string[] = [];
-    const grants = (res.rows as Record<string, unknown>[]).map((row) => ({
-      role: String(row.role),
-      table: String(row.table_name),
-      create: !!row.can_create,
-      read: !!row.can_read,
-      update: !!row.can_update,
-      delete: !!row.can_delete,
-      ...(() => {
-        const f = parseFilter(row.row_filter, `${row.role} on ${row.table_name}`, problems);
-        return f ? { rowFilter: f } : {};
-      })(),
-    }));
+    const grants: Grant[] = [];
+    for (const row of res.rows as Record<string, unknown>[]) {
+      const parsed = parseFilter(row.row_filter, `${row.role} on ${row.table_name}`, problems);
+      // A grant whose filter cannot be honoured is not loaded at all. With no
+      // grant, the policy denies — the same answer as if the row did not exist,
+      // which is the only safe reading of a row that cannot be understood.
+      if (!parsed.ok) continue;
+      grants.push({
+        role: String(row.role),
+        table: String(row.table_name),
+        create: !!row.can_create,
+        read: !!row.can_read,
+        update: !!row.can_update,
+        delete: !!row.can_delete,
+        ...(parsed.filter ? { rowFilter: parsed.filter } : {}),
+      });
+    }
     cache = { at: Date.now(), grants, problems };
     return cache;
   }
