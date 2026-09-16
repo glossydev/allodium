@@ -219,6 +219,46 @@ There is no separate content API. A public site mounts the same routes and the p
 actor gets what its role was granted — published posts, approved comments — through the
 one enforcement path.
 
+### Files
+
+Uploads are a relation to a files table, edited by uploading. Give the routes a byte
+store and the serving headers from `@allodium/storage`:
+
+```ts
+import { createLocalDiskDriver, assetContentHeaders, diskExtension } from '@allodium/storage';
+
+createAdminRoutes({
+  …,
+  uploads: {
+    driver: createLocalDiskDriver({ root: () => process.env.UPLOADS_DIR! }),
+    serve: assetContentHeaders,   // the stored-XSS policy lives there, not here
+    extension: diskExtension,
+    maxBytes: 20 * 1024 * 1024,   // default 10 MiB, enforced on the stream
+    accept: ['image/*', 'application/pdf'],
+  },
+});
+```
+
+That adds three endpoints under the reserved name `_files`:
+
+| | |
+|---|---|
+| `POST _files` | multipart with a `file` field (and optional `title`), or a raw body with an `X-Filename` header — gated as a **create** on the files table; 201 with the row |
+| `GET _files/<id>` | the bytes, with `Content-Type`, `nosniff`, an inline-or-attachment disposition, and a cache policy — gated as a **read** of the row, so a file the actor may not see is a 404; `?download` forces an attachment |
+| `DELETE _files/<id>` | the row and the bytes |
+
+A raster image is checked against its own first bytes, since the browser will render it
+inline; a "png" that is not one is a 415. The files table is the shape the console's
+Files silo uses (`disk_name`, `filename`, `mime_type`, `filesize_bytes`, `title`);
+`table` and `columns` rename it.
+
+On the form, a relation field with `"widget": "file"` shows the current filename, an
+upload control and Remove; the upload's row id becomes the field's value, and the record
+saves a foreign key exactly as it would from a picker. `uploadFile(config, file)` from
+`/react` is the same call for a custom form. Serve a cover image on the public site from
+the same mount: `<img src="/api/content/_files/{cover_image_id}">`, with the public
+granted read on `files`.
+
 ### Many-to-many
 
 Detected as **a composite primary key whose columns are all foreign keys** — not "a table

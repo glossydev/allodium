@@ -6,6 +6,6 @@
  * whichever level a screen needs; they are the same system, not alternatives.
  */
 
-export { useAdminView, useAdminList, useAdminForm, type AdminClientConfig, type UseAdminListResult, type UseAdminFormResult } from './hooks.js';
+export { useAdminView, useAdminList, useAdminForm, uploadFile, type AdminClientConfig, type UseAdminListResult, type UseAdminFormResult } from './hooks.js';
 export { AdminForm, AdminList, AdminRelated } from './components.js';
 export type { ResolvedView, ResolvedField, ResolvedRelated } from '../server/resolver.js';

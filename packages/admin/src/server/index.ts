@@ -33,6 +33,9 @@ export {
 export {
   createAdminRoutes,
   friendlyError,
+  sniffImage,
   type AdminRoutes,
   type AdminRoutesOptions,
+  type UploadOptions,
+  type StorageDriverLike,
 } from './routes.js';

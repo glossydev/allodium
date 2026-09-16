@@ -1,3 +1,5 @@
+import { randomUUID } from 'node:crypto';
+import { Readable } from 'node:stream';
 import { parseFilterParams, validateFilter, type ViewDefinition } from '../view.js';
 import type { ViewResolver } from './resolver.js';
 import type { ViewStore } from './views.js';
@@ -27,7 +29,52 @@ import type { ViewStore } from './views.js';
  *   PATCH  <view>/record/<id>          (PUT accepted)
  *   DELETE <view>/record/<id>
  *   GET    <view>/options/<field>?search=
+ * and, when `uploads` is configured, under the reserved name `_files`:
+ *   POST   _files                      upload (multipart "file" [+ "title"], or a raw body + X-Filename) → the files row, 201
+ *   GET    _files/<id>[?download]      the bytes, with the safe serving headers
+ *   DELETE _files/<id>                 the row and the bytes
  */
+
+/**
+ * The byte store, as this package needs to see it — the shape of
+ * `@allodium/storage`'s StorageDriver, declared structurally because neither
+ * package imports the other.
+ */
+export interface StorageDriverLike {
+  put(diskName: string, data: Buffer): Promise<void>;
+  stream(diskName: string): Promise<{ stream: Readable; size: number } | null>;
+  delete(diskName: string): Promise<void>;
+}
+
+/**
+ * Uploads through the admin: bytes to a driver, metadata to a files table,
+ * both gated by the grant on that table. A `file` widget on a relation field
+ * is the form's end of this.
+ */
+export interface UploadOptions {
+  driver: StorageDriverLike;
+  /**
+   * The headers a stored file is served with. Pass `@allodium/storage`'s
+   * `assetContentHeaders`. Required rather than defaulted so the one policy
+   * that keeps an uploaded SVG from becoming a script on your origin lives in
+   * one place and is not re-derived here.
+   */
+  serve(opts: { type: string | null | undefined; size: number; downloadName: string; forceDownload?: boolean; isProtected?: boolean }): Record<string, string>;
+  /**
+   * The on-disk extension for an upload. `@allodium/storage`'s `diskExtension`
+   * knows MIME types; the default takes the client filename's extension when
+   * it is a simple one and stores everything else as "bin".
+   */
+  extension?(mimeType: string | null, filename: string): string;
+  /** The files table. Default "files", in the shape the console's Files silo expects. */
+  table?: string;
+  /** Its column names, when they differ from disk_name / filename / mime_type / filesize_bytes / title. */
+  columns?: Partial<{ diskName: string; filename: string; mimeType: string; size: string; title: string }>;
+  /** Largest upload accepted. Default 10 MiB. Enforced on the stream, before anything is buffered. */
+  maxBytes?: number;
+  /** Only these MIME types — exact, or "image/*". Default: anything; the serving headers keep unsafe types from rendering inline. */
+  accept?: string[];
+}
 
 export interface AdminRoutesOptions {
   /** Built with a real `access` policy. Building it 'unrestricted' here is the console's job, not yours. */
@@ -46,7 +93,73 @@ export interface AdminRoutesOptions {
   allowOrigins?: string[] | ((origin: string) => boolean);
   /** Every successful write, for an audit log. */
   onWrite?(event: { action: 'create' | 'update' | 'delete'; table: string; id: unknown; actor: unknown }): void;
+  /** File uploads and serving, under `_files`. Omit and that name is a 404 like any other. */
+  uploads?: UploadOptions;
 }
+
+/* -------------------------------- uploads -------------------------------- */
+
+const RASTER = new Set(['image/png', 'image/jpeg', 'image/gif', 'image/webp']);
+
+/** What the first bytes say the file is, for the raster types a browser renders inline. */
+export function sniffImage(b: Uint8Array): string | null {
+  const ascii = (from: number, to: number) => String.fromCharCode(...b.subarray(from, to));
+  if (b.length >= 8 && b[0] === 0x89 && b[1] === 0x50 && b[2] === 0x4e && b[3] === 0x47) return 'image/png';
+  if (b.length >= 3 && b[0] === 0xff && b[1] === 0xd8 && b[2] === 0xff) return 'image/jpeg';
+  if (b.length >= 6 && ascii(0, 4) === 'GIF8') return 'image/gif';
+  if (b.length >= 12 && ascii(0, 4) === 'RIFF' && ascii(8, 12) === 'WEBP') return 'image/webp';
+  return null;
+}
+
+const defaultExtension = (_type: string | null, name: string): string => {
+  const dot = name.lastIndexOf('.');
+  const ext = dot > 0 ? name.slice(dot + 1).toLowerCase() : '';
+  return /^[a-z0-9]{1,8}$/.test(ext) ? ext : 'bin';
+};
+
+/**
+ * The body, or null the moment it exceeds `max`. Read from the stream, chunk
+ * by chunk, so an oversize upload is refused after `max` bytes rather than
+ * after all of them — `request.formData()` would buffer the lot first, which
+ * makes a size limit a comment rather than a limit.
+ */
+async function readCapped(request: Request, max: number): Promise<Uint8Array | null> {
+  const reader = request.body?.getReader();
+  if (!reader) return new Uint8Array();
+  const chunks: Uint8Array[] = [];
+  let n = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    n += value.byteLength;
+    if (n > max) {
+      // Release the reader rather than cancel the stream. Node's request body
+      // source can still be mid-enqueue when a cancel lands, and it then
+      // throws on a later tick where nothing can catch it — the process dies
+      // for an upload that was merely too big. Released, the stream simply
+      // stops being pulled; a browser never gets this far anyway, because it
+      // sends Content-Length and the check above refuses before the first byte.
+      try {
+        reader.releaseLock();
+      } catch {
+        /* nothing to release */
+      }
+      return null;
+    }
+    chunks.push(value);
+  }
+  const out = new Uint8Array(n);
+  let at = 0;
+  for (const c of chunks) {
+    out.set(c, at);
+    at += c.byteLength;
+  }
+  return out;
+}
+
+/** A signed-in actor, structurally: the public actor carries no user id. */
+const isSignedIn = (actor: unknown): boolean =>
+  !!actor && typeof actor === 'object' && (actor as { userId?: unknown }).userId !== null && (actor as { userId?: unknown }).userId !== undefined;
 
 export interface AdminRoutes {
   /** Dispatch one request. `segments` are the path parts after the mount point. */
@@ -136,7 +249,7 @@ export function createAdminRoutes(opts: AdminRoutesOptions): AdminRoutes {
    * Declared here as well as in @allodium/auth, on purpose: neither package
    * imports the other, and both need it.
    */
-  const crossSiteWrite = (request: Request): { status: number; message: string } | null => {
+  const crossSiteWrite = (request: Request, anyBodyType = false): { status: number; message: string } | null => {
     const origin = request.headers.get('origin');
     if (origin) {
       let sameHost = false;
@@ -149,10 +262,152 @@ export function createAdminRoutes(opts: AdminRoutesOptions): AdminRoutes {
     } else if (request.headers.get('sec-fetch-site') === 'cross-site') {
       return { status: 403, message: 'Cross-site request refused' };
     }
+    // An upload is multipart by nature, so its body type proves nothing; the
+    // origin checks above are what stand between it and a cross-site form.
+    if (anyBodyType) return null;
     const type = request.headers.get('content-type');
     if (type && !/^\s*application\/json\b/i.test(type)) return { status: 415, message: 'Expected application/json' };
     return null;
   };
+
+  /* ------------------------------ _files ------------------------------ */
+
+  const uploads = opts.uploads;
+  const filesTable = uploads?.table ?? 'files';
+  const cols = { diskName: 'disk_name', filename: 'filename', mimeType: 'mime_type', size: 'filesize_bytes', title: 'title', ...(uploads?.columns ?? {}) };
+
+  async function upload(request: Request, actor: unknown): Promise<Response> {
+    const u = uploads!;
+    // The gate first, before a byte is read: an upload nobody may make should
+    // not cost the server the upload.
+    await resolver.authorize({ table: filesTable }, 'create', actor);
+    const max = u.maxBytes ?? 10 * 1024 * 1024;
+    const tooBig = () => fail(request, `The file exceeds the ${max}-byte limit`, 413);
+    if (Number(request.headers.get('content-length')) > max) return tooBig();
+    const bytes = await readCapped(request, max);
+    if (!bytes) return tooBig();
+
+    const contentType = request.headers.get('content-type') ?? '';
+    let file: { name: string; type: string; data: Buffer; title: string | null };
+    if (/^\s*multipart\/form-data/i.test(contentType)) {
+      let form: FormData;
+      try {
+        form = await new Response(bytes as unknown as BodyInit, { headers: { 'content-type': contentType } }).formData();
+      } catch {
+        return fail(request, 'Malformed multipart body', 400);
+      }
+      const f = form.get('file');
+      if (!(f instanceof File)) return fail(request, 'Expected a "file" field', 400);
+      const t = form.get('title');
+      file = {
+        name: f.name || 'upload',
+        type: f.type || 'application/octet-stream',
+        data: Buffer.from(await f.arrayBuffer()),
+        title: typeof t === 'string' && t.trim() ? t.trim() : null,
+      };
+    } else {
+      const raw = request.headers.get('x-filename');
+      if (!raw) return fail(request, 'Send multipart/form-data with a "file" field, or a raw body with an X-Filename header', 400);
+      let name = raw;
+      try {
+        name = decodeURIComponent(raw);
+      } catch {
+        /* keep it as sent */
+      }
+      file = { name, type: contentType.split(';')[0].trim() || 'application/octet-stream', data: Buffer.from(bytes), title: null };
+    }
+    if (!file.data.length) return fail(request, 'The file is empty', 400);
+    // The stored filename is a download name, never a path.
+    file.name = file.name.replace(/[\\/]/g, '_').slice(0, 255);
+
+    // A raster type is checked against its own first bytes. The browser will
+    // render these inline, so "image/png" has to actually be one; a declared
+    // type is the client's claim, and the client is whoever it is.
+    const sniffed = sniffImage(file.data);
+    if (RASTER.has(file.type) && sniffed !== file.type) {
+      return fail(request, `The content is not ${file.type}${sniffed ? ` (it looks like ${sniffed})` : ''}`, 415);
+    }
+    if (u.accept && !u.accept.some((a) => (a.endsWith('/*') ? file.type.startsWith(a.slice(0, -1)) : a === file.type))) {
+      return fail(request, `${file.type} is not an accepted type`, 415);
+    }
+
+    const diskName = `${randomUUID()}.${(u.extension ?? defaultExtension)(file.type, file.name)}`;
+    await u.driver.put(diskName, file.data);
+    let row: Record<string, unknown>;
+    try {
+      row = await resolver.create(
+        { table: filesTable },
+        {
+          [cols.diskName]: diskName,
+          [cols.filename]: file.name,
+          [cols.mimeType]: file.type,
+          [cols.size]: file.data.length,
+          ...(file.title !== null ? { [cols.title]: file.title } : {}),
+        },
+        actor
+      );
+    } catch (e) {
+      // Bytes without a row are an orphan nothing can reach; take them back.
+      await u.driver.delete(diskName).catch(() => {});
+      throw e;
+    }
+    const view = await resolver.resolve({ table: filesTable });
+    opts.onWrite?.({ action: 'create', table: filesTable, id: view.primaryKey ? row[view.primaryKey] : undefined, actor });
+    return json(request, row, 201);
+  }
+
+  async function serve(request: Request, id: string, actor: unknown, forceDownload: boolean): Promise<Response> {
+    const u = uploads!;
+    // A read of the files table, row scope and all: a file the actor may not
+    // see answers as absent, exactly like a record.
+    const row = await resolver.read({ table: filesTable }, id, actor);
+    if (!row) return fail(request, 'Not found', 404);
+    const diskName = String(row[cols.diskName] ?? '');
+    const found = diskName ? await u.driver.stream(diskName) : null;
+    if (!found) return fail(request, 'The file record exists but its bytes are missing', 404);
+    const headers = u.serve({
+      type: (row[cols.mimeType] as string | null | undefined) ?? null,
+      size: found.size,
+      downloadName: String(row[cols.filename] ?? diskName),
+      forceDownload,
+      // What a signed-in person may see is theirs; what the public may see is
+      // everyone's, and a shared cache may keep it.
+      isProtected: isSignedIn(actor),
+    });
+    return new Response(Readable.toWeb(found.stream) as unknown as ReadableStream, { status: 200, headers: { ...headers, ...cors(request) } });
+  }
+
+  async function removeFile(request: Request, id: string, actor: unknown): Promise<Response> {
+    const u = uploads!;
+    const row = await resolver.read({ table: filesTable }, id, actor);
+    if (!row) return fail(request, 'Not found', 404);
+    await resolver.remove({ table: filesTable }, id, actor);
+    opts.onWrite?.({ action: 'delete', table: filesTable, id, actor });
+    const diskName = String(row[cols.diskName] ?? '');
+    if (diskName) await u.driver.delete(diskName).catch(() => {});
+    return json(request, { ok: true });
+  }
+
+  async function files(request: Request, rest: string[]): Promise<Response> {
+    if (!uploads) return fail(request, 'Not found', 404);
+    const [id, extra] = rest;
+    const actor = await opts.actorFor(request);
+    try {
+      switch (`${request.method}${id !== undefined ? ' :id' : ''}${extra !== undefined ? '/x' : ''}`) {
+        case 'POST':
+          return await upload(request, actor);
+        case 'GET :id':
+          return await serve(request, id, actor, new URL(request.url).searchParams.has('download'));
+        case 'DELETE :id':
+          return await removeFile(request, id, actor);
+        default:
+          return fail(request, 'Not found', 404);
+      }
+    } catch (e) {
+      const code = status(e);
+      return fail(request, code === 500 ? friendlyError(e) : (e as Error).message, code);
+    }
+  }
 
   async function body(request: Request): Promise<Record<string, unknown> | null> {
     try {
@@ -185,7 +440,7 @@ export function createAdminRoutes(opts: AdminRoutesOptions): AdminRoutes {
         headers: {
           ...cors(request),
           'Access-Control-Allow-Methods': 'GET, POST, PATCH, PUT, DELETE, OPTIONS',
-          'Access-Control-Allow-Headers': 'Content-Type',
+          'Access-Control-Allow-Headers': 'Content-Type, X-Filename',
           'Access-Control-Max-Age': '600',
         },
       });
@@ -193,10 +448,12 @@ export function createAdminRoutes(opts: AdminRoutesOptions): AdminRoutes {
 
     async handle(request, segments) {
       if (request.method === 'OPTIONS') return this.preflight(request);
+      const isFiles = segments[0] === '_files';
       if (request.method !== 'GET' && request.method !== 'HEAD') {
-        const refused = crossSiteWrite(request);
+        const refused = crossSiteWrite(request, isFiles);
         if (refused) return fail(request, refused.message, refused.status);
       }
+      if (isFiles) return files(request, segments.slice(1).map((s) => decodeURIComponent(s)));
 
       const [name, kind, third] = segments.map((s) => decodeURIComponent(s));
       if (!name || !kind) return fail(request, 'Not found', 404);

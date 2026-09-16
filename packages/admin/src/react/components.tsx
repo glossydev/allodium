@@ -4,7 +4,9 @@ import { useState } from 'react';
 import type { ResolvedField, ResolvedRelated } from '../server/resolver.js';
 import { linksFor, type FilterOp } from '../view.js';
 import { fromLocalDateTimeInput, toLocalDateTimeInput } from './datetime.js';
-import { useAdminForm, useAdminList, type AdminClientConfig, type UseAdminListResult } from './hooks.js';
+import { uploadFile, useAdminForm, useAdminList, type AdminClientConfig, type UseAdminListResult } from './hooks.js';
+
+type UploadFn = (file: File) => Promise<{ ok: true; data: Record<string, unknown> } | { ok: false; error: string }>;
 
 /**
  * Layer 3 — unstyled components.
@@ -58,6 +60,90 @@ function LinkOut({ label, href, target }: { label: string; href: string; target:
   );
 }
 
+/* -------------------------------- file --------------------------------- */
+
+/**
+ * A relation to a files table, edited by uploading.
+ *
+ * The value is the files row's id; what the operator sees is a filename. The
+ * upload goes to the mount's `_files` endpoint and the returned row's id
+ * becomes the value — the form saves a foreign key, exactly as it would have
+ * from a picker, and nothing about the record's own save changes.
+ */
+function FileInput({
+  field,
+  value,
+  onChange,
+  upload,
+  label,
+  inputId,
+  describedBy,
+  invalid,
+}: {
+  field: ResolvedField;
+  value: unknown;
+  onChange: (v: unknown) => void;
+  upload?: UploadFn;
+  /** The saved file's name, when known — the row's `<key>__label`. */
+  label?: string | null;
+  inputId: string;
+  describedBy?: string;
+  invalid: boolean;
+}) {
+  const [name, setName] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const has = value !== null && value !== undefined && value !== '';
+  const shown = has ? (name ?? label ?? `#${String(value)}`) : null;
+  return (
+    <span data-allodium="file" data-state={busy ? 'uploading' : has ? 'set' : 'empty'}>
+      {shown && <span data-allodium="file-name">{shown}</span>}
+      <input
+        id={inputId}
+        name={field.key}
+        type="file"
+        disabled={field.readOnly || busy || !upload}
+        aria-describedby={describedBy}
+        aria-invalid={invalid || undefined}
+        required={(field.required && !has) || undefined}
+        onChange={async (e) => {
+          const picked = e.target.files?.[0];
+          if (!picked || !upload) return;
+          setBusy(true);
+          setError(null);
+          const r = await upload(picked);
+          setBusy(false);
+          if (r.ok) {
+            onChange(r.data[field.source?.value ?? 'id']);
+            setName(String(r.data.filename ?? picked.name));
+          } else setError(r.error);
+          e.target.value = '';
+        }}
+      />
+      {busy && <span data-allodium="file-status">Uploading…</span>}
+      {has && !field.readOnly && (
+        <button
+          type="button"
+          data-allodium="file-clear"
+          disabled={busy}
+          onClick={() => {
+            onChange(null);
+            setName(null);
+          }}
+        >
+          Remove
+        </button>
+      )}
+      {!upload && <span data-allodium="file-error">Uploads are not configured</span>}
+      {error && (
+        <span data-allodium="file-error" role="alert">
+          {error}
+        </span>
+      )}
+    </span>
+  );
+}
+
 /* ------------------------------- inputs -------------------------------- */
 
 function FieldInput({
@@ -68,6 +154,8 @@ function FieldInput({
   inputId,
   describedBy,
   invalid,
+  upload,
+  fileLabel,
 }: {
   field: ResolvedField;
   value: unknown;
@@ -76,7 +164,12 @@ function FieldInput({
   inputId: string;
   describedBy?: string;
   invalid: boolean;
+  upload?: UploadFn;
+  fileLabel?: string | null;
 }) {
+  if (field.widget === 'file') {
+    return <FileInput field={field} value={value} onChange={onChange} upload={upload} label={fileLabel} inputId={inputId} describedBy={describedBy} invalid={invalid} />;
+  }
   const common = {
     id: inputId,
     name: field.key,
@@ -270,7 +363,11 @@ export function AdminForm({
     );
   }
 
-  const formFields = view.fields.filter((f) => f.in.includes('form'));
+  // A many-to-many whose membership the server left out of the saved row is
+  // one this actor may not read; an empty control would say "none", which is
+  // not what is true, and saving it would not be a no-op.
+  const formFields = view.fields.filter((f) => f.in.includes('form') && !(f.kind === 'm2m' && form.row && !(f.key in form.row)));
+  const upload: UploadFn = (file) => uploadFile(config, file);
   // Links resolve against the SAVED row, never the draft: a slug typed into the
   // form is not an address until it has been saved. A new record has no row, so
   // it has no links.
@@ -335,6 +432,8 @@ export function AdminForm({
               inputId={inputId}
               describedBy={describedBy}
               invalid={!!problems[f.key]}
+              upload={upload}
+              fileLabel={form.row ? ((form.row[`${f.key}__label`] as string | null | undefined) ?? null) : null}
             />
             {f.help && (
               <p id={helpId} data-allodium="help">

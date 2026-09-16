@@ -310,6 +310,16 @@ export function createViewResolver(
   const visibleColumns = (meta: TableMeta): ColumnMeta[] =>
     meta.columns.filter((c) => !isMasked(meta.name, c.name));
 
+  /**
+   * One column in a projection. A DATE is selected as text: the driver would
+   * otherwise hand back a JS Date at midnight in the SERVER'S zone, which the
+   * JSON layer renders in UTC, and on any server east of Greenwich the 10th
+   * arrives in the browser as the 9th. A date has no instant to convert; it is
+   * the string it always was.
+   */
+  const projected = (c: ColumnMeta, prefix = ''): string =>
+    c.family === 'date' ? `${prefix}${qid(c.name)}::text as ${qid(c.name)}` : `${prefix}${qid(c.name)}`;
+
   const tableOrThrow = async (name: string): Promise<TableMeta> => {
     const t = await introspector.table(name);
     if (!t) throw err(`Unknown table: ${name}`);
@@ -658,7 +668,7 @@ export function createViewResolver(
     // Every column the caller may see — NOT `meta.columns`. Selecting the whole table
     // and trusting the view to have declared only safe fields is how a password hash
     // reaches the client without any view mentioning it.
-    const base = visibleColumns(meta).map((c) => `t.${qid(c.name)}`);
+    const base = visibleColumns(meta).map((c) => projected(c, 't.'));
     const joins: string[] = [];
     // fieldKey -> the SQL expression producing what the operator SEES for that
     // relation. Sorting and searching a relation column both have to use this
@@ -922,13 +932,32 @@ export function createViewResolver(
     if (!row) return null;
 
     // Current members of each many-to-many, as an array of far-side values.
+    //
+    // A membership is a set of references INTO the far table, and a reference is
+    // readable only when the row it points at is — the same rule as a relation's
+    // label. No grant on the far table leaves the key out; a row scope on it
+    // narrows the set. The join table itself is not gated separately: its rows
+    // are part of this record, and writing them is editing this record.
     for (const f of view.fields) {
-      if (f.kind !== 'm2m') continue;
+      if (f.kind !== 'm2m' || !f.source) continue;
       const m2m = (def.fields ?? []).find((x) => isManyToManyField(x) && fieldKey(x) === f.key) as ManyToManyField | undefined;
       if (!m2m) continue;
+      const scope = labelScope(actor, f.source.table);
+      if (scope === null) continue;
+      const params: unknown[] = [String(id)];
+      let narrowed = '';
+      if (scope.length) {
+        let inner: string;
+        try {
+          inner = grantClauses(scope, await tableOrThrow(f.source.table), params, '');
+        } catch {
+          continue; // a grant naming a column the far table lacks: closed, so no membership
+        }
+        narrowed = ` and ${qid(m2m.far)} in (select ${qid(f.source.value)} from ${qid(f.source.table)} where true${inner})`;
+      }
       const linked = await db.query(
-        `select ${qid(m2m.far)} as v from ${qid(m2m.through)} where ${qid(m2m.near)}::text = $1`,
-        [String(id)]
+        `select ${qid(m2m.far)} as v from ${qid(m2m.through)} where ${qid(m2m.near)}::text = $1${narrowed}`,
+        params
       );
       row[f.key] = (linked.rows as { v: unknown }[]).map((r) => r.v);
     }
@@ -1075,7 +1104,7 @@ export function createViewResolver(
     // `returning *` returns the row the DATABASE produced, which includes columns the
     // caller never submitted and may not see — a create against a users table handed
     // back the stored password hash. Project it, exactly like a read.
-    const returning = visibleColumns(meta).map((c) => qid(c.name)).join(', ');
+    const returning = visibleColumns(meta).map((c) => projected(c)).join(', ');
     return transact(async (exec) => {
       const cols = Object.keys(own);
       const res = cols.length
@@ -1094,7 +1123,7 @@ export function createViewResolver(
   async function update(def: ViewDefinition, id: unknown, values: Record<string, unknown>, actor?: unknown) {
     const { view, own, links } = await partition(def, values);
     const meta = await tableOrThrow(def.table);
-    const returning = visibleColumns(meta).map((c) => qid(c.name)).join(', ');
+    const returning = visibleColumns(meta).map((c) => projected(c)).join(', ');
     // Editing a row outside the grant must fail as "not found", the same answer a
     // missing row gives — telling someone their edit was FORBIDDEN confirms the
     // row exists and belongs to somebody.

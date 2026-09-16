@@ -1,6 +1,6 @@
 {
   "name": "@allodium/admin",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "Schema-driven CRUD admin generated from your Drizzle schema — no parallel config language.",
   "license": "MIT",
   "repository": {
@@ -38,7 +38,7 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "node test/view-schema.mjs && node test/view-store.mjs && node test/masking.mjs && node test/filter.mjs && node test/related.mjs && node test/access.mjs && node test/routes.mjs && node test/links.mjs && node test/datetime.mjs"
+    "test": "node test/view-schema.mjs && node test/view-store.mjs && node test/masking.mjs && node test/filter.mjs && node test/related.mjs && node test/access.mjs && node test/routes.mjs && node test/links.mjs && node test/datetime.mjs && node test/uploads.mjs && node test/dates.mjs"
   },
   "engines": {
     "node": ">=20"

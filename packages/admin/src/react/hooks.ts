@@ -68,6 +68,28 @@ async function request<T>(url: string, init?: RequestInit): Promise<{ ok: true; 
   }
 }
 
+/* -------------------------------- uploads -------------------------------- */
+
+/**
+ * Send a file to the mount's `_files` endpoint and get the files row back.
+ *
+ * What the `file` widget calls; exported so a custom form can do the same.
+ * The browser sets the multipart boundary, so any Content-Type in
+ * `fetchOptions.headers` is dropped for this one request.
+ */
+export async function uploadFile(
+  config: Pick<AdminClientConfig, 'baseUrl' | 'fetchOptions'>,
+  file: File,
+  title?: string
+): Promise<{ ok: true; data: Record<string, unknown> } | { ok: false; error: string }> {
+  const body = new FormData();
+  body.append('file', file, file.name);
+  if (title) body.append('title', title);
+  const headers = new Headers(config.fetchOptions?.headers);
+  headers.delete('content-type');
+  return request<Record<string, unknown>>(`${config.baseUrl}/_files`, { ...config.fetchOptions, method: 'POST', headers, body });
+}
+
 /* ------------------------------- the view -------------------------------- */
 
 export function useAdminView(config: AdminClientConfig) {

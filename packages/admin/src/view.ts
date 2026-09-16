@@ -273,8 +273,14 @@ export interface RelationField extends FieldCommon {
     /** Restrict selectable rows, e.g. { "archived": false }. */
     filter?: FilterInput;
   };
-  /** select for many options, radio for a handful, autocomplete for very many. */
-  widget?: 'select' | 'radio' | 'autocomplete';
+  /**
+   * select for many options, radio for a handful, autocomplete for very many.
+   *
+   * `file` is for a relation to a files table: the form offers an upload, sends
+   * the bytes to the mount's `_files` endpoint, and stores the new row's id in
+   * this column. Needs `uploads` configured on the admin routes.
+   */
+  widget?: 'select' | 'radio' | 'autocomplete' | 'file';
 }
 
 /**

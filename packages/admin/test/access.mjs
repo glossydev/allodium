@@ -208,6 +208,30 @@ if (!process.env.DATABASE_URL) {
     const found = await repPolicy.list({ ...ordersView, list: { searchColumns: ['customer_id'] } }, { actor: repActor, search: String(repRead.customer_id__label).split(' ')[0], pageSize: 200 });
     ok('searching a scoped label finds only what the actor may see', found.total > 0 && found.rows.every((r) => String(r.customer_id) === String(customer.customer_id)), `${found.total}`);
     ok('the console lane is unaffected', (await open.list(ordersView, { pageSize: 2 })).rows.every((r) => 'customer_id__label' in r));
+
+    /* -------------- many-to-many membership follows the far table ------------- */
+    // A post's tags are references into `tags`. No grant on tags: the key is
+    // absent from the record. A row scope on tags: only the tags inside it.
+    const postsView = { table: 'posts', fields: [{ column: 'id' }, { column: 'title' }, { kind: 'm2m', through: 'post_tags', near: 'post_id', far: 'tag_id', farTable: 'tags', display: 'label' }] };
+    const tagged = (await raw('select post_id, count(*)::int as n from post_tags group by 1 order by 2 desc limit 1'))[0];
+    const tagIds = (await raw('select tag_id from post_tags where post_id = $1 order by 1', [tagged.post_id])).map((r) => r.tag_id);
+    ok('the fixture has a post with several tags', tagged.n >= 2, `${tagged.n}`);
+    const m2mPolicy = createViewResolver(pool, {
+      access: createAccessPolicy([
+        grant('reader', 'posts', ['read']),
+        grant('tagger', 'posts', ['read']),
+        grant('tagger', 'tags', ['read']),
+        grant('narrow', 'posts', ['read']),
+        grant('narrow', 'tags', ['read'], [{ column: 'id', op: 'eq', value: tagIds[0] }]),
+      ]),
+    });
+    const noTags = await m2mPolicy.read(postsView, tagged.post_id, actor(['reader']));
+    ok('with no grant on the far table the membership is absent', noTags !== null && !('tags' in noTags), JSON.stringify(Object.keys(noTags ?? {})));
+    const allTags = await m2mPolicy.read(postsView, tagged.post_id, actor(['tagger']));
+    ok('with a grant on it the membership is complete', JSON.stringify((allTags?.tags ?? []).map(Number).sort((a, b) => a - b)) === JSON.stringify(tagIds.map(Number)), JSON.stringify(allTags?.tags));
+    const someTags = await m2mPolicy.read(postsView, tagged.post_id, actor(['narrow']));
+    ok('with a row scope on it the membership is narrowed', JSON.stringify(someTags?.tags?.map(Number)) === JSON.stringify([Number(tagIds[0])]), JSON.stringify(someTags?.tags));
+    ok('the console lane sees every tag', (await open.read(postsView, tagged.post_id))?.tags?.length === tagged.n);
   } finally {
     await pool.end();
   }

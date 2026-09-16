@@ -257,11 +257,12 @@
           }
         },
         "widget": {
-          "description": "select for many options, radio for a handful, autocomplete for very many.",
+          "description": "select for many options, radio for a handful, autocomplete for very many. file: a relation to a files table, edited by uploading; needs uploads configured on the admin routes.",
           "enum": [
             "select",
             "radio",
-            "autocomplete"
+            "autocomplete",
+            "file"
           ]
         },
         "label": {
