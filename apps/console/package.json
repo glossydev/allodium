@@ -16,7 +16,7 @@
     "@allodium/db": "^0.2.0",
     "@allodium/storage": "^0.2.0",
     "drizzle-orm": "^0.45.0",
-    "next": "^15.3.4",
+    "next": "^16.4.0",
     "pg": "^8.16.0",
     "react": "^19.1.0",
     "react-dom": "^19.1.0"

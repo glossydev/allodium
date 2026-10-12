@@ -135,7 +135,7 @@ if (!process.env.DATABASE_URL) {
     ok('?download forces an attachment', /^attachment/.test((await get(row.id, viewer, '?download')).headers.get('content-disposition') ?? ''));
     ok('a role with no read grant gets 403', (await get(row.id, blind)).status === 403);
     ok('an unknown id is 404', (await get('00000000-0000-0000-0000-000000000000', viewer)).status === 404);
-    ok('an id that is not a uuid is 404, not 500', (await get('nope', viewer)).status === 404);
+    ok('an id that is not a uuid is 400, not 500', (await get('nope', viewer)).status === 400);
 
     /* ------------------------------ refusals ------------------------------- */
     const lying = await multipart(Buffer.from('<svg onload=alert(1)></svg>'), { actor: media, type: 'image/png', name: 'not.png' });

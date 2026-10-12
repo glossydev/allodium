@@ -40,7 +40,7 @@ jobs:
       - name: Publish what is not yet on the registry
         run: |
           set -euo pipefail
-          for dir in packages/db packages/storage packages/auth packages/admin; do
+          for dir in packages/db packages/storage packages/auth packages/admin packages/from-directus; do
             name=$(node -p "require('./$dir/package.json').name")
             version=$(node -p "require('./$dir/package.json').version")
             if [ "$(npm view "$name@$version" version 2>/dev/null || true)" = "$version" ]; then

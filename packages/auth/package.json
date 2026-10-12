@@ -1,7 +1,7 @@
 {
   "name": "@allodium/auth",
-  "version": "0.3.0",
-  "description": "First-party auth you own: argon2 passwords, session store, rotating refresh, OIDC, WebAuthn passkeys, reset emails, tenant membership.",
+  "version": "0.3.1",
+  "description": "First-party auth you own: argon2id passwords, a session store with rotating refresh and cross-surface scoping, the four auth routes, role and row-level grants, reset and state tokens, rate limiting, act-as.",
   "license": "MIT",
   "repository": {
     "type": "git",

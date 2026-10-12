@@ -27,6 +27,11 @@ const throws = async (name, fn) => {
 
 {
   const p = createMaskPolicy();
+  // The short secret words are anchored to a name boundary: a column that merely
+  // CONTAINS them is not a secret, and hiding it would look like a bug in the view.
+  for (const [col, masked] of [['footprint', false], ['basalt_rock', false], ['otp', true], ['otp_secret', true], ['user_otp', true], ['mfa_secret', true], ['salt', true], ['password_salt', true], ['comfa', false]]) {
+    ok(`"${col}" is ${masked ? 'masked' : 'not masked'}`, p.isMasked('t', col) === masked);
+  }
 
   ok('masks password_hash', p.isMasked('users', 'password_hash'));
   ok('masks mfa_secret', p.isMasked('users', 'mfa_secret'));

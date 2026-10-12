@@ -10,7 +10,9 @@
  * Everything is a factory taking explicit config — no env vars are read in here, no
  * framework imports. Your app binds names, secrets, and tables once and re-exports;
  * plus an "act as" user switcher that hooks your one identity seam.
- * OIDC and WebAuthn ceremony helpers arrive in a later minor.
+ * OpenID sign-in, passkeys and password-reset routes are planned as separate entry
+ * points (@allodium/auth/oidc, /passkeys, /reset) so a project that wants none of
+ * them installs none of them. They are not in this version.
  */
 
 export { hashPassword, verifyPassword, DUMMY_ARGON2ID_HASH } from './passwords.js';

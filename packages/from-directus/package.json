@@ -1,7 +1,7 @@
 {
   "name": "@allodium/from-directus",
-  "version": "0.0.1",
-  "description": "The Directus exit ramp: schema puller (field-metadata aware), data importer (argon2 hashes port — zero password resets), and a readItems-shaped compat shim for route-by-route porting.",
+  "version": "0.0.2",
+  "description": "Scaffolding (0.0.1): the planned exit ramp from Directus — schema puller, user and file adopters. Nothing is implemented yet; the README says what is intended.",
   "license": "MIT",
   "type": "module",
   "main": "./dist/index.js",

@@ -7,6 +7,21 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
+    # The security-critical batteries — the gate, row scoping, masking, the auth
+    # routes, uploads — only run against a real Postgres. Without one here they
+    # skipped on every push, and the permission model had no CI at all.
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: allodium
+          POSTGRES_PASSWORD: localdev
+          POSTGRES_DB: allodium_dev
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd pg_isready --health-interval 5s --health-timeout 5s --health-retries 12
+    env:
+      DATABASE_URL: postgresql://allodium:localdev@localhost:5432/allodium_dev
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-node@v5
@@ -15,6 +30,10 @@ jobs:
           cache: npm
 
       - run: npm ci
+
+      # The same fixture getting-started seeds, in order. The runner image ships psql.
+      - name: Seed the database
+        run: for f in dev/seed/00*.sql; do psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -q -f "$f"; done
 
       # BUILD BEFORE TYPECHECK. The console imports @allodium/* through their
       # exports maps, which point at dist/ — so with no dist/ every one of those
@@ -29,8 +48,8 @@ jobs:
       # The session/integration battery needs live Postgres and is not run here.
       - run: node packages/auth/test/act-as.mjs
 
-      # Workspace `test` scripts. Currently the view-schema drift guard, which
+      # Every workspace battery, database-backed ones included (DATABASE_URL is
+      # set at the job level). Among them the view-schema drift guard, which
       # nothing else can catch: view.schema.json and src/view.ts declare the same
-      # format twice and neither imports the other, so a build stays green while
-      # the shipped schema quietly starts lying about the format.
+      # format twice and neither imports the other.
       - run: npm test

@@ -127,12 +127,32 @@ if (!process.env.DATABASE_URL) {
     ok('delete is refused without the grant', await refuses(() => gated.remove({ table: 'orders' }, own.id, member)));
     ok('create is refused without the grant', await refuses(() => gated.create({ table: 'orders' }, { customer_id: 1 }, member)));
 
-    // A row-restricted CREATE cannot be verified on insert, and says so.
+    // A row-restricted CREATE is written and then checked: a row inside the grant
+    // stays, a row outside it rolls back — the database never holds it.
     const restrictedCreate = createViewResolver(pool, {
-      access: createAccessPolicy([grant('member', 'orders', ['create'], [{ column: 'customer_id', op: 'eq', value: '$actor.customerId' }])]),
+      access: createAccessPolicy([grant('member', 'orders', ['create', 'read'], [{ column: 'customer_id', op: 'eq', value: '$actor.customerId' }])]),
     });
-    ok('a row-restricted create refuses with a reason',
-      await refuses(() => restrictedCreate.create({ table: 'orders' }, { customer_id: 1 }, member), /cannot be verified on insert/));
+    const [{ n: ordersBefore }] = await raw('select count(*)::int as n from orders');
+    const otherCustomer = (await raw('select id from customers where id is distinct from $1 limit 1', [customer.customer_id]))[0];
+    ok('a row-restricted create refuses a row outside the grant',
+      await refuses(() => restrictedCreate.create({ table: 'orders' }, { customer_id: otherCustomer.id, order_number: 'ACC-OUT', status: 'pending' }, member), /outside the rows you may create/));
+    ok('...and the refused row was rolled back', (await raw('select count(*)::int as n from orders'))[0].n === ordersBefore);
+    const madeRow = await restrictedCreate.create({ table: 'orders' }, { customer_id: customer.customer_id, order_number: 'ACC-IN', status: 'pending' }, member);
+    ok('...while a row inside the grant is created', String(madeRow?.customer_id) === String(customer.customer_id), JSON.stringify(madeRow));
+    await raw('delete from orders where id = $1', [madeRow.id]);
+
+    // The WHERE on an update scopes the row as it WAS. The values can move it,
+    // and a portal user must not be able to hand their row to another client.
+    const mover = createViewResolver(pool, {
+      access: createAccessPolicy([grant('member', 'orders', ['read', 'update'], [{ column: 'customer_id', op: 'eq', value: '$actor.customerId' }])]),
+    });
+    ok('an update that would move the row outside the grant is refused',
+      await refuses(() => mover.update({ table: 'orders' }, own.id, { customer_id: otherCustomer.id }, member), /move the row outside/));
+    ok('...and the row is untouched', String((await raw('select customer_id from orders where id = $1', [own.id]))[0].customer_id) === String(customer.customer_id));
+    const noteBefore = (await raw('select notes from orders where id = $1', [own.id]))[0].notes;
+    const kept = await mover.update({ table: 'orders' }, own.id, { notes: 'still mine' }, member);
+    ok('...while an update that keeps it inside succeeds', kept?.notes === 'still mine');
+    await raw('update orders set notes = $2 where id = $1', [own.id, noteBefore]);
 
     // Support may update; the scope on a granted update stops at other rows.
     const scopedUpdater = createViewResolver(pool, {

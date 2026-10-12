@@ -26,7 +26,10 @@
  * families of credential columns.
  */
 export const MASK_PATTERN =
-  /(password|passwd|secret|token|_hash|hashed_|api[_-]?key|private[_-]?key|access[_-]?key|client[_-]?secret|totp|mfa|otp|salt|credential|session[_-]?id|refresh)/i;
+  // The short words are anchored to a name boundary (start, end, or an
+  // underscore): bare `otp` matched "footprint" and bare `salt` matched
+  // "basalt", which is the wrong kind of surprise for a rule that hides data.
+  /(password|passwd|secret|token|_hash|hashed_|api[_-]?key|private[_-]?key|access[_-]?key|client[_-]?secret|totp|(^|_)(mfa|otp|salt)(_|$)|credential|session[_-]?id|refresh)/i;
 
 /**
  * Names that trip the pattern but are structural rather than secret. Kept deliberately

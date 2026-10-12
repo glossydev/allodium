@@ -1,6 +1,6 @@
 {
   "name": "@allodium/admin",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "description": "Schema-driven CRUD admin generated from your Drizzle schema — no parallel config language.",
   "license": "MIT",
   "repository": {

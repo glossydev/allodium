@@ -910,6 +910,30 @@ export function createViewResolver(
     return out.length ? ' and ' + out.join(' and ') : '';
   }
 
+  /**
+   * After a write, the row has to still be inside the grant.
+   *
+   * The WHERE on an update scopes the row as it WAS; the values being written
+   * can move it — a portal user granted "orders where client_id = mine" could
+   * otherwise reassign an order to another client with one PATCH. An insert has
+   * no old row to scope at all. So both check the row as it IS, inside the same
+   * transaction, and roll the write back if it landed outside. That check is
+   * also what makes a row-restricted create possible: write it, then look.
+   */
+  async function assertWithinGrant(exec: Queryable, meta: TableMeta, pk: string, id: unknown, granted: Predicate[], action: 'create' | 'update'): Promise<void> {
+    if (!granted.length) return;
+    const params: unknown[] = [id];
+    const scoped = grantClauses(granted, meta, params, '');
+    const res = await exec.query(`select 1 from ${qid(meta.name)} where ${qid(pk)} = $1${scoped} limit 1`, params);
+    if (!res.rows.length) {
+      throw err(
+        action === 'create'
+          ? `Not permitted: the new row falls outside the rows you may create in ${meta.name}`
+          : `Not permitted: that change would move the row outside the rows you may update in ${meta.name}`
+      );
+    }
+  }
+
   async function read(def: ViewDefinition, id: unknown, actor?: unknown): Promise<Record<string, unknown> | null> {
     const view = await resolve(def);
     const meta = await tableOrThrow(def.table);
@@ -921,11 +945,16 @@ export function createViewResolver(
     // back null — the same answer as a row that does not exist, deliberately:
     // "no such order" and "not your order" must not be distinguishable, or the
     // endpoint becomes a way to enumerate other people's ids.
+    // The key is compared as its own type, not as text: Postgres infers the
+    // parameter's type from the column, so '42' binds as an integer and the
+    // primary-key index is used. Casting the column to text defeated that index
+    // on every record read. A value that cannot be the key's type is a data
+    // error (SQLSTATE 22), which the routes answer as a 400.
     const idParam = params.push(String(id));
     const scoped = grantClauses(gate(actor, def.table, 'read'), meta, params);
 
     const res = await db.query(
-      `select ${select} from ${qid(def.table)} t\n${join}\nwhere t.${qid(requirePk(view))}::text = $${idParam}${scoped} limit 1`,
+      `select ${select} from ${qid(def.table)} t\n${join}\nwhere t.${qid(requirePk(view))} = $${idParam}${scoped} limit 1`,
       params
     );
     const row = res.rows[0] as Record<string, unknown> | undefined;
@@ -956,7 +985,7 @@ export function createViewResolver(
         narrowed = ` and ${qid(m2m.far)} in (select ${qid(f.source.value)} from ${qid(f.source.table)} where true${inner})`;
       }
       const linked = await db.query(
-        `select ${qid(m2m.far)} as v from ${qid(m2m.through)} where ${qid(m2m.near)}::text = $1${narrowed}`,
+        `select ${qid(m2m.far)} as v from ${qid(m2m.through)} where ${qid(m2m.near)} = $1${narrowed}`,
         params
       );
       row[f.key] = (linked.rows as { v: unknown }[]).map((r) => r.v);
@@ -1053,7 +1082,7 @@ export function createViewResolver(
    */
   async function syncLinks(link: { field: ManyToManyField; want: unknown[] }, id: unknown, exec: Queryable) {
     const { through, near, far } = link.field;
-    const current = await exec.query(`select ${qid(far)} as v from ${qid(through)} where ${qid(near)}::text = $1`, [String(id)]);
+    const current = await exec.query(`select ${qid(far)} as v from ${qid(through)} where ${qid(near)} = $1`, [String(id)]);
     const have = new Set((current.rows as { v: unknown }[]).map((r) => String(r.v)));
     const want = new Set(link.want.map((v) => String(v)));
 
@@ -1061,7 +1090,9 @@ export function createViewResolver(
     const add = [...want].filter((v) => !have.has(v));
 
     if (remove.length) {
-      await exec.query(`delete from ${qid(through)} where ${qid(near)}::text = $1 and ${qid(far)}::text = any($2::text[])`, [String(id), remove]);
+      // `= any($2)` lets Postgres type the array from the column, so the join
+      // table's own indexes serve the delete; a text cast on both sides did not.
+      await exec.query(`delete from ${qid(through)} where ${qid(near)} = $1 and ${qid(far)} = any($2)`, [String(id), remove]);
     }
     for (const v of add) {
       await exec.query(
@@ -1092,15 +1123,11 @@ export function createViewResolver(
   async function create(def: ViewDefinition, values: Record<string, unknown>, actor?: unknown) {
     const { view, own, links } = await partition(def, values);
     const meta = await tableOrThrow(def.table);
-    // A row-restricted grant cannot be checked on an INSERT: there is no existing
-    // row to test, and guessing which submitted values would satisfy the rule is
-    // how you end up writing a row the grantee cannot then read. Refuse plainly.
+    // A row-restricted grant has no old row to scope an INSERT by. So the row is
+    // written and then checked, inside the transaction: if what landed is not a
+    // row the grant covers, the insert rolls back. Guessing from the submitted
+    // values instead would miss every default and trigger the database applies.
     const granted = gate(actor, def.table, 'create');
-    if (granted.length) {
-      throw err(
-        `Not permitted: creating in ${def.table} is granted only for a restricted set of rows, which cannot be verified on insert — grant create on the whole table, or create through your own endpoint.`
-      );
-    }
     // `returning *` returns the row the DATABASE produced, which includes columns the
     // caller never submitted and may not see — a create against a users table handed
     // back the stored password hash. Project it, exactly like a read.
@@ -1115,6 +1142,7 @@ export function createViewResolver(
         : await exec.query(`insert into ${qid(def.table)} default values returning ${returning}`);
       const row = res.rows[0] as Record<string, unknown>;
       const id = row[requirePk(view)];
+      await assertWithinGrant(exec, meta, requirePk(view), id, granted, 'create');
       for (const l of links) await syncLinks(l, id, exec);
       return row;
     });
@@ -1135,18 +1163,20 @@ export function createViewResolver(
         const params: unknown[] = [String(id), ...Object.values(own)];
         const scoped = grantClauses(granted, meta, params, '');
         const res = await exec.query(
-          `update ${qid(def.table)} set ${cols.map((c, i) => `${qid(c)} = $${i + 2}`).join(', ')} where ${qid(requirePk(view))}::text = $1${scoped} returning ${returning}`,
+          `update ${qid(def.table)} set ${cols.map((c, i) => `${qid(c)} = $${i + 2}`).join(', ')} where ${qid(requirePk(view))} = $1${scoped} returning ${returning}`,
           params
         );
         row = res.rows[0] as Record<string, unknown> | undefined;
         if (!row) throw err('Row not found');
+        // The WHERE above scoped the row as it was. This checks it as it is now.
+        await assertWithinGrant(exec, meta, requirePk(view), id, granted, 'update');
       } else {
         // The no-op branch still returns the row, so it needs the same projection —
         // `select *` here would undo the whole guard for any update that submitted
         // only many-to-many changes.
         const params: unknown[] = [String(id)];
         const scoped = grantClauses(granted, meta, params, '');
-        const res = await exec.query(`select ${returning} from ${qid(def.table)} where ${qid(requirePk(view))}::text = $1${scoped}`, params);
+        const res = await exec.query(`select ${returning} from ${qid(def.table)} where ${qid(requirePk(view))} = $1${scoped}`, params);
         row = res.rows[0] as Record<string, unknown> | undefined;
         if (!row) throw err('Row not found');
       }
@@ -1160,7 +1190,7 @@ export function createViewResolver(
     const meta = await tableOrThrow(def.table);
     const params: unknown[] = [String(id)];
     const scoped = grantClauses(gate(actor, def.table, 'delete'), meta, params, '');
-    const res = await db.query(`delete from ${qid(def.table)} where ${qid(requirePk(view))}::text = $1${scoped}`, params);
+    const res = await db.query(`delete from ${qid(def.table)} where ${qid(requirePk(view))} = $1${scoped}`, params);
     if (!res.rowCount) throw err('Row not found');
   }
 
