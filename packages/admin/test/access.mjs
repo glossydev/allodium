@@ -280,22 +280,26 @@ if (!process.env.DATABASE_URL) {
     const otherOrder = (await raw('select id from orders where customer_id is distinct from $1 limit 1', [customer.customer_id]))[0];
     ok('re-parenting the row outside the path is refused', await refuses(() => hop.update(itemsView, myItem.id, { order_id: otherOrder.id }, member), /move the row outside/));
     ok('...and the row stayed where it was', String((await raw('select order_id from order_items where id = $1', [myItem.id]))[0].order_id) !== String(otherOrder.id));
-    const [{ user_id: ownerUser }] = await raw('select user_id from customers where id = $1', [customer.customer_id]);
-    ok('the fixture customer has a user (for the two-hop case)', !!ownerUser);
-    if (ownerUser) {
-      const self = { userId: ownerUser, roles: ['self'], claims: {} };
+    // Two hops: items → orders → customers → users. Not every fixture customer
+    // has a user, so pick one that has both a user and orders rather than assume.
+    const linked = (await raw('select c.id, c.user_id, count(o.id)::int as orders from customers c join orders o on o.customer_id = c.id where c.user_id is not null group by 1, 2 order by 3 desc limit 1'))[0];
+    ok('the fixture has a customer with a user and orders', !!linked, 'two-hop cases need one');
+    if (linked) {
+      const self = { userId: linked.user_id, roles: ['self'], claims: {} };
+      const [{ n: linkedItems }] = await raw('select count(*)::int as n from order_items oi join orders o on o.id = oi.order_id where o.customer_id = $1', [linked.id]);
       const two = createViewResolver(pool, {
         access: createAccessPolicy([grant('self', 'order_items', ['read'], [{ column: 'order_id.customer_id.user_id', op: 'eq', value: '$actor.userId' }])]),
       });
       const twoHop = await two.list(itemsView, { actor: self, pageSize: 1000 });
-      ok('a two-hop path resolves through both foreign keys', twoHop.total === myItems, `${twoHop.total} vs ${myItems}`);
+      ok('a two-hop path resolves through both foreign keys', twoHop.total === linkedItems && twoHop.total < allItems, `${twoHop.total} vs ${linkedItems}`);
       const pathPicker = createViewResolver(pool, {
         access: createAccessPolicy([grant('self', 'order_items', ['read']), grant('self', 'orders', ['read'], [{ column: 'customer_id.user_id', op: 'eq', value: '$actor.userId' }])]),
       });
       const picks3 = await pathPicker.options(itemsView, 'order_id', { actor: self });
-      ok('a picker honours a path grant on its target', picks3.length === customer.n, `${picks3.length} vs ${customer.n}`);
+      ok('a picker honours a path grant on its target', picks3.length === linked.orders, `${picks3.length} vs ${linked.orders}`);
       const labelled3 = await pathPicker.list(itemsView, { actor: self, pageSize: 1000 });
-      ok('a label honours a path grant on its target', labelled3.rows.every((r) => (r.order_id__label !== null) === (hopped.rows.some((m) => String(m.id) === String(r.id)))));
+      const linkedIds = new Set((await raw('select oi.id from order_items oi join orders o on o.id = oi.order_id where o.customer_id = $1', [linked.id])).map((r) => String(r.id)));
+      ok('a label honours a path grant on its target', labelled3.rows.every((r) => (r.order_id__label !== null) === linkedIds.has(String(r.id))));
     }
     const badHop = (filter) => createViewResolver(pool, { access: createAccessPolicy([grant('member', 'order_items', ['read'], filter)]) });
     ok('a path through a column that is not a foreign key is refused', await refuses(() => badHop([{ column: 'quantity.customer_id', op: 'eq', value: 1 }]).list(itemsView, { actor: member }), /is not a foreign key/));
