@@ -252,6 +252,55 @@ if (!process.env.DATABASE_URL) {
     const someTags = await m2mPolicy.read(postsView, tagged.post_id, actor(['narrow']));
     ok('with a row scope on it the membership is narrowed', JSON.stringify(someTags?.tags?.map(Number)) === JSON.stringify([Number(tagIds[0])]), JSON.stringify(someTags?.tags));
     ok('the console lane sees every tag', (await open.read(postsView, tagged.post_id))?.tags?.length === tagged.n);
+
+    /* ------------- a grant that reaches its owner through a hop ------------- */
+    // order_items has no customer column: its owner is two tables away. A
+    // grant may say so with a path through the foreign keys, and every read
+    // path — list, read, update, the post-write check, labels, pickers — must
+    // honour it the same way.
+    const itemsView = { table: 'order_items', fields: [{ column: 'id' }, { kind: 'relation', column: 'order_id', relation: { table: 'orders', display: 'order_number' } }, { column: 'quantity' }] };
+    const [{ n: myItems }] = await raw('select count(*)::int as n from order_items oi join orders o on o.id = oi.order_id where o.customer_id = $1', [customer.customer_id]);
+    const [{ n: allItems }] = await raw('select count(*)::int as n from order_items');
+    const hop = createViewResolver(pool, {
+      access: createAccessPolicy([
+        grant('member', 'order_items', ['read', 'update'], [{ column: 'order_id.customer_id', op: 'eq', value: '$actor.customerId' }]),
+        grant('member', 'orders', ['read'], [{ column: 'customer_id', op: 'eq', value: '$actor.customerId' }]),
+      ]),
+    });
+    const hopped = await hop.list(itemsView, { actor: member, pageSize: 1000 });
+    ok("a path grant lists only the rows whose parent is the actor's", hopped.total === myItems && hopped.total < allItems, `${hopped.total} vs ${myItems} of ${allItems}`);
+    ok('...labelling the parent, which is inside its own grant', hopped.rows.every((r) => typeof r.order_id__label === 'string'));
+    const myItem = (await raw('select oi.id from order_items oi join orders o on o.id = oi.order_id where o.customer_id = $1 limit 1', [customer.customer_id]))[0];
+    const otherItem = (await raw('select oi.id from order_items oi join orders o on o.id = oi.order_id where o.customer_id is distinct from $1 limit 1', [customer.customer_id]))[0];
+    ok("a path grant reads the actor's row", (await hop.read(itemsView, myItem.id, member)) !== null);
+    ok("...and someone else's reads as absent", (await hop.read(itemsView, otherItem.id, member)) === null);
+    const qtyBefore = (await raw('select quantity from order_items where id = $1', [myItem.id]))[0].quantity;
+    ok('a path grant scopes an update', (await hop.update(itemsView, myItem.id, { quantity: qtyBefore }, member)) !== null);
+    ok("...refusing someone else's row as absent", await refuses(() => hop.update(itemsView, otherItem.id, { quantity: 1 }, member), /Row not found/));
+    const otherOrder = (await raw('select id from orders where customer_id is distinct from $1 limit 1', [customer.customer_id]))[0];
+    ok('re-parenting the row outside the path is refused', await refuses(() => hop.update(itemsView, myItem.id, { order_id: otherOrder.id }, member), /move the row outside/));
+    ok('...and the row stayed where it was', String((await raw('select order_id from order_items where id = $1', [myItem.id]))[0].order_id) !== String(otherOrder.id));
+    const [{ user_id: ownerUser }] = await raw('select user_id from customers where id = $1', [customer.customer_id]);
+    ok('the fixture customer has a user (for the two-hop case)', !!ownerUser);
+    if (ownerUser) {
+      const self = { userId: ownerUser, roles: ['self'], claims: {} };
+      const two = createViewResolver(pool, {
+        access: createAccessPolicy([grant('self', 'order_items', ['read'], [{ column: 'order_id.customer_id.user_id', op: 'eq', value: '$actor.userId' }])]),
+      });
+      const twoHop = await two.list(itemsView, { actor: self, pageSize: 1000 });
+      ok('a two-hop path resolves through both foreign keys', twoHop.total === myItems, `${twoHop.total} vs ${myItems}`);
+      const pathPicker = createViewResolver(pool, {
+        access: createAccessPolicy([grant('self', 'order_items', ['read']), grant('self', 'orders', ['read'], [{ column: 'customer_id.user_id', op: 'eq', value: '$actor.userId' }])]),
+      });
+      const picks3 = await pathPicker.options(itemsView, 'order_id', { actor: self });
+      ok('a picker honours a path grant on its target', picks3.length === customer.n, `${picks3.length} vs ${customer.n}`);
+      const labelled3 = await pathPicker.list(itemsView, { actor: self, pageSize: 1000 });
+      ok('a label honours a path grant on its target', labelled3.rows.every((r) => (r.order_id__label !== null) === (hopped.rows.some((m) => String(m.id) === String(r.id)))));
+    }
+    const badHop = (filter) => createViewResolver(pool, { access: createAccessPolicy([grant('member', 'order_items', ['read'], filter)]) });
+    ok('a path through a column that is not a foreign key is refused', await refuses(() => badHop([{ column: 'quantity.customer_id', op: 'eq', value: 1 }]).list(itemsView, { actor: member }), /is not a foreign key/));
+    ok('a path ending at a column that does not exist is refused', await refuses(() => badHop([{ column: 'order_id.nope', op: 'eq', value: 1 }]).list(itemsView, { actor: member }), /does not exist/));
+    ok('a path through a table that does not exist is refused', await refuses(() => badHop([{ column: 'order_id.customer_id.nope.x', op: 'eq', value: 1 }]).list(itemsView, { actor: member }), /Not permitted/));
   } finally {
     await pool.end();
   }

@@ -98,7 +98,17 @@ policy.can(PUBLIC_ACTOR, 'orders', 'read');
 ```
 
 A `row_filter` on a grant is a JSON array of predicates; `$actor.<claim>` substitutes a
-claim the app supplied, and a missing claim **denies**. So does a filter that cannot be
+claim the app supplied, and a missing claim **denies**. A predicate's column may be a
+**path through foreign keys** when the owner lives on another table — the tasks whose
+project belongs to this client:
+
+```json
+[{ "column": "project_id.client_id", "op": "eq", "value": "$actor.clientId" }]
+```
+
+Each segment but the last must be a foreign-key column on the table it is on; the
+admin runtime follows them through the live catalog and compiles one subquery per hop.
+A path the catalog cannot follow refuses the whole operation rather than widening it. So does a filter that cannot be
 read — `{}` where `[]` was meant — which refuses the whole grant rather than quietly
 widening it to every row. `policy.problems` lists what was refused and why. A
 `super_admin` role bypasses the model by name and holds no rows.

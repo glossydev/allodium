@@ -171,7 +171,12 @@ await resolver.options(def, 'author_id', { search, actor });  // a relation pick
 Every call takes the **actor** — `{ userId, roles, claims }`, or the public actor for
 nobody — and the grant decides what comes back. A refusal throws (`Not permitted: …`);
 a row outside a grant reads as `null`, the same as a row that does not exist, so ids
-cannot be enumerated. Relation labels and picker options are reads of the *other*
+cannot be enumerated. A write is checked again after it lands, inside its transaction,
+so an update cannot move a row out of the grant that allowed it, and a row-restricted
+create is possible: write it, then look. A grant's row filter may walk foreign keys
+(`order_id.customer_id = $actor.customerId`) when the owner is on another table; the
+resolver compiles one subquery per hop from the catalog, and a path it cannot follow
+refuses rather than widens. Relation labels and picker options are reads of the *other*
 table and are gated as such, row scope included: an operator who may see only their own
 customer is not shown every customer's name down an orders list.
 

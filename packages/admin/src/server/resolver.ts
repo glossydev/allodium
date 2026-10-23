@@ -664,7 +664,7 @@ export function createViewResolver(
    * actor's row scope on the target as bound parameters, and parameter numbers
    * are by push order, so the join binds first and the clauses continue from it.
    */
-  function selectWithLabels(view: ResolvedView, meta: TableMeta, relationDisplays: Map<string, RelationSource>, actor: unknown, params: unknown[]) {
+  async function selectWithLabels(view: ResolvedView, meta: TableMeta, relationDisplays: Map<string, RelationSource>, actor: unknown, params: unknown[]) {
     // Every column the caller may see — NOT `meta.columns`. Selecting the whole table
     // and trusting the view to have declared only safe fields is how a password hash
     // reaches the client without any view mentioning it.
@@ -688,17 +688,15 @@ export function createViewResolver(
       if (scope === null) continue;
       const alias = `r${i++}`;
       const on = [`${alias}.${qid(src.value)} = t.${qid(f.column)}`];
-      let scopable = true;
-      for (const p of scope) {
-        const col = src.meta.columns.find((c) => c.name === p.column);
-        if (!col) {
-          scopable = false; // a grant naming a column the target lacks: closed, so no label
-          break;
-        }
-        const sql = predicateSql(p, `${alias}.${qid(col.name)}`, params);
-        if (sql) on.push(sql);
+      // A grant the catalog cannot follow (a column or path the target lacks)
+      // is closed: no label, rather than a refused row.
+      const before = params.length;
+      try {
+        on.push(...(await grantSql(scope, src.meta, params, `${alias}.`)));
+      } catch {
+        params.length = before; // nothing of a refused scope may stay bound
+        continue;
       }
-      if (!scopable) continue;
       const cols = src.displayCols;
       const expr = cols.length
         ? cols.length === 1
@@ -743,7 +741,7 @@ export function createViewResolver(
     // clauses below in order. Everything numbers itself by push, so the array is
     // shared rather than merged.
     const params: unknown[] = [];
-    const { select, join, labelExpr } = selectWithLabels(view, meta, sources, o.actor, params);
+    const { select, join, labelExpr } = await selectWithLabels(view, meta, sources, o.actor, params);
     const joinHasParams = params.length > 0;
 
     const page = Math.max(1, o.page ?? 1);
@@ -804,12 +802,7 @@ export function createViewResolver(
     // hiding a column must not widen who sees the row — but a broken GRANT is a
     // permission failure that has to fail closed and say so, while a broken bound
     // scope is the caller getting it wrong. Same channel, different fault.
-    for (const p of gate(o.actor, def.table, 'read')) {
-      const col = meta.columns.find((c) => c.name === p.column);
-      if (!col) throw err(`Not permitted: the grant restricts ${meta.name}.${p.column}, which does not exist`);
-      const sql = predicateSql(p, `t.${qid(col.name)}`, params);
-      if (sql) clauses.push(sql);
-    }
+    clauses.push(...(await grantSql(gate(o.actor, def.table, 'read'), meta, params, 't.')));
 
     for (const p of o.scope ?? []) {
       const col = meta.columns.find((c) => c.name === p.column);
@@ -899,14 +892,66 @@ export function createViewResolver(
    * column must never widen who can see the row — so this validates against the
    * catalog, exactly as the bound scope does.
    */
-  function grantClauses(granted: Predicate[], meta: TableMeta, params: unknown[], prefix = 't.'): string {
-    const out: string[] = [];
-    for (const p of granted) {
+  /**
+   * One granted predicate as SQL.
+   *
+   * The column may be a PATH through foreign keys — `project_id.client_id` —
+   * so that "the tasks whose project belongs to this client" is a grant and not
+   * a query the application has to write by hand for every table that reaches
+   * its owner through a hop. Every segment but the last must be a foreign key
+   * on the table at hand, resolved through the catalog the resolver already
+   * reads; the last is a column on the table the path arrives at. It compiles
+   * to nested `in (select …)` subqueries, one per hop, innermost first:
+   *
+   *   t."project_id" in (select "id" from "projects" where "client_id" = $1)
+   *
+   * A path the catalog cannot follow — a segment that is not a foreign key, a
+   * final column that does not exist — refuses the whole operation, exactly as
+   * a plain column that does not exist does. Fail closed, never widen.
+   */
+  async function grantPredicateSql(p: Predicate, meta: TableMeta, params: unknown[], prefix: string): Promise<string | null> {
+    const segments = p.column.split('.');
+    if (segments.length === 1) {
       const col = meta.columns.find((c) => c.name === p.column);
       if (!col) throw err(`Not permitted: the grant restricts ${meta.name}.${p.column}, which does not exist`);
-      const sql = predicateSql(p, `${prefix}${qid(col.name)}`, params);
+      return predicateSql(p, `${prefix}${qid(col.name)}`, params);
+    }
+    const hops: { fkColumn: string; table: string; references: string }[] = [];
+    let at = meta;
+    for (const seg of segments.slice(0, -1)) {
+      const col = at.columns.find((c) => c.name === seg);
+      if (!col?.fk) {
+        throw err(`Not permitted: the grant restricts ${meta.name} through "${p.column}", but ${at.name}.${seg} is not a foreign key`);
+      }
+      hops.push({ fkColumn: col.name, table: col.fk.table, references: col.fk.column });
+      at = await tableOrThrow(col.fk.table);
+    }
+    const last = segments[segments.length - 1];
+    const lastCol = at.columns.find((c) => c.name === last);
+    if (!lastCol) throw err(`Not permitted: the grant restricts ${meta.name} through "${p.column}", but ${at.name}.${last} does not exist`);
+    // Parameters bind in the innermost predicate; the subqueries wrap outward.
+    // Each subquery selects from one table, so its columns need no alias.
+    let sql = predicateSql({ ...p, column: last }, qid(lastCol.name), params);
+    if (!sql) return null;
+    for (let i = hops.length - 1; i >= 0; i--) {
+      const h = hops[i];
+      sql = `${i === 0 ? prefix : ''}${qid(h.fkColumn)} in (select ${qid(h.references)} from ${qid(h.table)} where ${sql})`;
+    }
+    return sql;
+  }
+
+  /** Granted predicates as SQL fragments, in order, checked against the TABLE (and, for paths, the tables they reach). */
+  async function grantSql(granted: Predicate[], meta: TableMeta, params: unknown[], prefix: string): Promise<string[]> {
+    const out: string[] = [];
+    for (const p of granted) {
+      const sql = await grantPredicateSql(p, meta, params, prefix);
       if (sql) out.push(sql);
     }
+    return out;
+  }
+
+  async function grantClauses(granted: Predicate[], meta: TableMeta, params: unknown[], prefix = 't.'): Promise<string> {
+    const out = await grantSql(granted, meta, params, prefix);
     return out.length ? ' and ' + out.join(' and ') : '';
   }
 
@@ -923,7 +968,7 @@ export function createViewResolver(
   async function assertWithinGrant(exec: Queryable, meta: TableMeta, pk: string, id: unknown, granted: Predicate[], action: 'create' | 'update'): Promise<void> {
     if (!granted.length) return;
     const params: unknown[] = [id];
-    const scoped = grantClauses(granted, meta, params, '');
+    const scoped = await grantClauses(granted, meta, params, '');
     const res = await exec.query(`select 1 from ${qid(meta.name)} where ${qid(pk)} = $1${scoped} limit 1`, params);
     if (!res.rows.length) {
       throw err(
@@ -939,7 +984,7 @@ export function createViewResolver(
     const meta = await tableOrThrow(def.table);
     const sources = await relationSources(view);
     const params: unknown[] = [];
-    const { select, join } = selectWithLabels(view, meta, sources, actor, params);
+    const { select, join } = await selectWithLabels(view, meta, sources, actor, params);
 
     // The grant narrows WHICH row this id may address. A row outside it comes
     // back null — the same answer as a row that does not exist, deliberately:
@@ -951,7 +996,7 @@ export function createViewResolver(
     // on every record read. A value that cannot be the key's type is a data
     // error (SQLSTATE 22), which the routes answer as a 400.
     const idParam = params.push(String(id));
-    const scoped = grantClauses(gate(actor, def.table, 'read'), meta, params);
+    const scoped = await grantClauses(gate(actor, def.table, 'read'), meta, params);
 
     const res = await db.query(
       `select ${select} from ${qid(def.table)} t\n${join}\nwhere t.${qid(requirePk(view))} = $${idParam}${scoped} limit 1`,
@@ -978,7 +1023,7 @@ export function createViewResolver(
       if (scope.length) {
         let inner: string;
         try {
-          inner = grantClauses(scope, await tableOrThrow(f.source.table), params, '');
+          inner = await grantClauses(scope, await tableOrThrow(f.source.table), params, '');
         } catch {
           continue; // a grant naming a column the far table lacks: closed, so no membership
         }
@@ -1028,11 +1073,7 @@ export function createViewResolver(
 
     // The grant's rows first, through its own error path — a grant naming a
     // column the target does not have is a broken grant, and fails closed.
-    for (const p of granted) {
-      if (!target.columns.some((c) => c.name === p.column)) throw err(`Not permitted: the grant restricts ${target.name}.${p.column}, which does not exist`);
-      const sql = predicateSql(p, qid(p.column), params);
-      if (sql) clauses.push(sql);
-    }
+    clauses.push(...(await grantSql(granted, target, params, '')));
 
     for (const p of field.source.filter ?? []) {
       if (!target.columns.some((c) => c.name === p.column)) continue; // warned at resolve time
@@ -1161,7 +1202,7 @@ export function createViewResolver(
       const cols = Object.keys(own);
       if (cols.length) {
         const params: unknown[] = [String(id), ...Object.values(own)];
-        const scoped = grantClauses(granted, meta, params, '');
+        const scoped = await grantClauses(granted, meta, params, '');
         const res = await exec.query(
           `update ${qid(def.table)} set ${cols.map((c, i) => `${qid(c)} = $${i + 2}`).join(', ')} where ${qid(requirePk(view))} = $1${scoped} returning ${returning}`,
           params
@@ -1175,7 +1216,7 @@ export function createViewResolver(
         // `select *` here would undo the whole guard for any update that submitted
         // only many-to-many changes.
         const params: unknown[] = [String(id)];
-        const scoped = grantClauses(granted, meta, params, '');
+        const scoped = await grantClauses(granted, meta, params, '');
         const res = await exec.query(`select ${returning} from ${qid(def.table)} where ${qid(requirePk(view))} = $1${scoped}`, params);
         row = res.rows[0] as Record<string, unknown> | undefined;
         if (!row) throw err('Row not found');
@@ -1189,7 +1230,7 @@ export function createViewResolver(
     const view = await resolve(def);
     const meta = await tableOrThrow(def.table);
     const params: unknown[] = [String(id)];
-    const scoped = grantClauses(gate(actor, def.table, 'delete'), meta, params, '');
+    const scoped = await grantClauses(gate(actor, def.table, 'delete'), meta, params, '');
     const res = await db.query(`delete from ${qid(def.table)} where ${qid(requirePk(view))} = $1${scoped}`, params);
     if (!res.rowCount) throw err('Row not found');
   }
