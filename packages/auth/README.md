@@ -84,6 +84,65 @@ session is actually gone (a 500 with cookies intact otherwise); and a POST from 
 that is neither this host nor allowlisted, or with a body not typed as JSON, is refused
 — CORS headers say who may read a response, not who may send a request.
 
+## Optional entry points
+
+Two flows every application rewrites, shipped as separate imports so a project that wants
+neither loads neither. Each takes the decisions as callbacks and owns the ceremony.
+
+### Password reset — `@allodium/auth/reset`
+
+```ts
+import { createResetRoutes } from '@allodium/auth/reset';
+
+export const reset = createResetRoutes({
+  tokens: createResetTokens({ secret: () => process.env.AUTH_SECRET }),
+  sessions,
+  findUserByEmail, findUserById,                        // → { id, email, passwordHash, status }
+  setPasswordHash: (id, hash) => db.update(...),        // the one write it makes
+  resetUrl: (token) => `${SITE}/reset?token=${encodeURIComponent(token)}`,
+  sendMail: ({ to, resetUrl, user }) => mailer.send(...), // your provider, your template
+  rateLimit: createRateLimiter(),
+});
+// POST /api/auth/reset/request  { email }           → always 200
+// POST /api/auth/reset          { token, password } → 200 | 400 weak | 401 not valid | 403 inactive
+```
+
+The request endpoint answers identically whether or not the email exists and does not
+wait for the mail to send, so timing says nothing either. A token is keyed on the
+user's current hash, so it dies the moment the password changes; every session is
+revoked in the same breath, because a reset that leaves an intruder's session alive has
+not reset anything.
+
+### OpenID sign-in — `@allodium/auth/oidc`
+
+```ts
+import { createOidcLogin, GOOGLE_ISSUER } from '@allodium/auth/oidc';
+
+export const google = createOidcLogin({
+  issuer: GOOGLE_ISSUER,
+  clientId: process.env.GOOGLE_CLIENT_ID!,
+  clientSecret: () => process.env.GOOGLE_CLIENT_SECRET!,
+  redirectUri: `${SITE}/api/auth/google/callback`,
+  stateSecret: () => process.env.AUTH_SECRET!,
+  authParams: { prompt: 'select_account' },
+  onIdentity: async (claims) => findOrCreateUser(claims),  // THE decision; null refuses
+  sessions, cookies, origin: 'site',
+  successRedirect: '/account',
+  failureRedirect: '/login',                                // gets ?error=<reason>
+});
+// GET /api/auth/google           → google.start(req)
+// GET /api/auth/google/callback  → google.callback(req)
+```
+
+Endpoints come from the provider's discovery document (or name them). The state is
+signed into an HttpOnly cookie with a nonce, so a callback is bound to the browser that
+started the flow. The identity token is **verified**, not trusted: signature against
+the provider's published keys (refetched once on an unknown key id), issuer, audience,
+expiry and nonce, and `email_verified` unless you say otherwise. Refusals redirect with
+a reason — `state`, `token`, `unverified-email`, `not-registered`, `inactive` — and
+never mint a session. Passkeys are planned as `@allodium/auth/passkeys` on the same
+pattern, over an optional WebAuthn peer.
+
 ## Machine callers
 
 A job runner, another service, an agent's tooling, a deploy script: no cookie jar, and

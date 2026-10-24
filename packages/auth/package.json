@@ -1,6 +1,6 @@
 {
   "name": "@allodium/auth",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "description": "First-party auth you own: argon2id passwords, a session store with rotating refresh and cross-surface scoping, the four auth routes, role and row-level grants, reset and state tokens, rate limiting, act-as.",
   "license": "MIT",
   "repository": {
@@ -16,6 +16,14 @@
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
     },
+    "./reset": {
+      "types": "./dist/reset.d.ts",
+      "import": "./dist/reset.js"
+    },
+    "./oidc": {
+      "types": "./dist/oidc.d.ts",
+      "import": "./dist/oidc.js"
+    },
     "./package.json": "./package.json"
   },
   "files": [
@@ -24,7 +32,7 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "node test/act-as.mjs && node test/access.mjs && node test/grants.mjs && node test/routes.mjs && node test/loader.mjs && node test/tokens.mjs"
+    "test": "node test/act-as.mjs && node test/access.mjs && node test/grants.mjs && node test/routes.mjs && node test/loader.mjs && node test/tokens.mjs && node test/reset.mjs && node test/oidc.mjs"
   },
   "engines": {
     "node": ">=20"
