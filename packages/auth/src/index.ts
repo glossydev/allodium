@@ -75,3 +75,10 @@ export {
   type AuthRoutesOptions,
   type AuthUserRow,
 } from './routes.js';
+export {
+  createApiTokens,
+  type ApiTokenStore,
+  type ApiTokenStoreOptions,
+  type ApiTokenIdentity,
+  type ApiTokenRow,
+} from './tokens.js';

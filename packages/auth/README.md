@@ -84,6 +84,31 @@ session is actually gone (a 500 with cookies intact otherwise); and a POST from 
 that is neither this host nor allowlisted, or with a body not typed as JSON, is refused
 — CORS headers say who may read a response, not who may send a request.
 
+## Machine callers
+
+A job runner, another service, an agent's tooling, a deploy script: no cookie jar, and
+the usual answer is one shared secret in an environment variable that nobody can rotate,
+scope, revoke or attribute. Instead, a row per token:
+
+```ts
+import { createApiTokens } from '@allodium/auth';
+
+const tokens = createApiTokens(pool, { prefix: 'myapp_' });   // table api_tokens, see dev/seed/008
+
+const { token } = await tokens.mint({ label: 'nightly invoicing', userId });   // shown ONCE
+const service = await tokens.mint({ label: 'the deploy box', roles: ['deployer'] }); // no user: its roles alone
+
+// In actorFor, before the cookie:
+const t = await tokens.resolve(request);              // Authorization: Bearer …, or null
+if (t) return t.userId ? grants.actorFor(t.userId, claims) : { userId: null, roles: t.roles, claims: {} };
+```
+
+The database holds only a SHA-256 digest. `resolve` answers null the same way for a
+missing header, a wrong prefix, an unknown, expired or revoked token, and touches
+`last_used_at` at most once a minute. A service token has no user, so a grant on "your
+own rows" denies it — a service owns none. Bearer requests carry no cookies, so the
+cross-site check on writes does not apply to them: a curl is not a cross-site form.
+
 ## Grants
 
 ```ts

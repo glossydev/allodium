@@ -17,7 +17,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Pool } from 'pg';
 import { createViewResolver, createFileViewStore, createAdminRoutes } from '../dist/server/index.js';
-import { createGrantLoader, PUBLIC_ACTOR } from '../../auth/dist/index.js';
+import { createGrantLoader, createApiTokens, PUBLIC_ACTOR } from '../../auth/dist/index.js';
 
 let pass = 0;
 let fail = 0;
@@ -153,6 +153,39 @@ if (!process.env.DATABASE_URL) {
     ok('a bad filter is 400', (await call('GET', ['posts', 'list'], { query: 'filter=status:roughly:x' })).status === 400);
     ok('a filter on an unknown field is 400, not 500', (await call('GET', ['posts', 'list'], { query: 'filter=nope:eq:1' })).status === 400);
     ok('invalid JSON on a write is 400', (await routes.handle(new Request('http://api.test/posts/record', { method: 'POST', headers: { 'x-actor': JSON.stringify(support), 'Content-Type': 'application/json' }, body: '{nope' }), ['posts', 'record'])).status === 400);
+
+    /* ------------------------ a machine caller, by token ------------------------ */
+    // No cookie, no browser: a bearer token resolves to an identity, the app
+    // turns it into an actor exactly as it would a session, and the grant
+    // model takes it from there. No Origin header, so the cross-site check
+    // passes — a curl is not a cross-site form.
+    const tokens = createApiTokens(pool, { prefix: 'rt_', touchEveryMs: 0 });
+    const userToken = await tokens.mint({ label: 'routes test', userId: supportUser.user_id });
+    const svcToken = await tokens.mint({ label: 'routes test service', roles: ['support'] });
+    const byToken = createAdminRoutes({
+      resolver,
+      views,
+      actorFor: async (req) => {
+        const t = await tokens.resolve(req);
+        if (!t) return PUBLIC_ACTOR;
+        return t.userId ? loader.actorFor(t.userId, {}) : { userId: null, roles: t.roles, claims: {} };
+      },
+    });
+    const bearer = (token, method = 'GET', segs = ['orders', 'list'], body) =>
+      byToken.handle(new Request(`http://api.test/${segs.join('/')}?pageSize=1`, { method, headers: { authorization: `Bearer ${token}`, 'Content-Type': 'application/json' }, body: body ? JSON.stringify(body) : undefined }), segs);
+    try {
+      ok('a user token lists what its user may', (await jsonOf(await bearer(userToken.token)))?.total === allOrders);
+      ok('a service token lists what its roles may', (await jsonOf(await bearer(svcToken.token)))?.total === allOrders);
+      ok('no token is the public, who may not', (await byToken.handle(new Request('http://api.test/orders/list'), ['orders', 'list'])).status === 403);
+      ok('a wrong token is the public too', (await bearer('rt_' + 'Z'.repeat(43))).status === 403);
+      const tokenWrite = await bearer(userToken.token, 'PATCH', ['orders', 'record', String(other.id)], { notes: before });
+      ok('a token may write with no Origin at all (not a browser)', tokenWrite.status === 200, String(tokenWrite.status));
+      ok('...and the write is audited to the token\'s user', writes.some((w) => w.action === 'update' && String(w.actor?.userId) === String(supportUser.user_id)));
+      await tokens.revoke(userToken.id);
+      ok('a revoked token is the public again', (await bearer(userToken.token)).status === 403);
+    } finally {
+      await raw('delete from api_tokens where id = any($1::uuid[])', [[userToken.id, svcToken.id]]).catch(() => {});
+    }
 
     /* ---------------------- cross-site request forgery ---------------------- */
     // CORS headers say who may READ a response. These say who may SEND a write.
