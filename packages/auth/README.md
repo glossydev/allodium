@@ -140,8 +140,44 @@ started the flow. The identity token is **verified**, not trusted: signature aga
 the provider's published keys (refetched once on an unknown key id), issuer, audience,
 expiry and nonce, and `email_verified` unless you say otherwise. Refusals redirect with
 a reason — `state`, `token`, `unverified-email`, `not-registered`, `inactive` — and
-never mint a session. Passkeys are planned as `@allodium/auth/passkeys` on the same
-pattern, over an optional WebAuthn peer.
+never mint a session.
+
+### Passkeys — `@allodium/auth/passkeys`
+
+```bash
+npm install @simplewebauthn/server      # optional peer: loaded only by this entry point
+```
+
+```ts
+import { createPasskeys, createPasskeyStore } from '@allodium/auth/passkeys';
+
+export const passkeys = createPasskeys({
+  rpID: () => new URL(process.env.SITE_URL!).hostname,
+  rpName: 'Your product',
+  origin: () => process.env.SITE_URL!,
+  challengeSecret: () => process.env.AUTH_SECRET!,
+  store: createPasskeyStore(pool),                 // the table in dev/seed/009, or your own store
+  currentUser: async (req) => sessionUser(req),    // who is registering / listing / removing
+  findUserById,                                    // whose credential just signed in
+  sessions, cookies, sessionOrigin: 'passkey',
+});
+// POST /api/auth/passkey/register-options → passkeys.registerOptions(req)   (signed in)
+// POST /api/auth/passkey/register-verify  → passkeys.registerVerify(req)    { response, label? }
+// POST /api/auth/passkey/login-options    → passkeys.loginOptions(req)
+// POST /api/auth/passkey/login-verify     → passkeys.loginVerify(req)       { response } → session
+// GET  /api/auth/passkey/credentials      → passkeys.list(req)
+// DELETE /api/auth/passkey/credentials/:id → passkeys.remove(req, id)
+```
+
+The browser side is `@simplewebauthn/browser`'s `startRegistration` and
+`startAuthentication`, fed the options these routes return. The challenge travels in a
+signed, HttpOnly, single-use cookie with its purpose and (for registration) the user
+bound in — no challenge table, nothing a second tab can race. Sign-in is usernameless
+and requires user verification, since a passkey is a passwordless single factor; the
+user handle must name the credential's owner; the signature counter must advance, so a
+cloned key is refused. Every refusal short of "this account is suspended" answers the
+same 401 without a session. If the peer is not installed, every route answers 503 and
+says so.
 
 ## Machine callers
 

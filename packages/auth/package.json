@@ -1,6 +1,6 @@
 {
   "name": "@allodium/auth",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "description": "First-party auth you own: argon2id passwords, a session store with rotating refresh and cross-surface scoping, the four auth routes, role and row-level grants, reset and state tokens, rate limiting, act-as.",
   "license": "MIT",
   "repository": {
@@ -24,6 +24,10 @@
       "types": "./dist/oidc.d.ts",
       "import": "./dist/oidc.js"
     },
+    "./passkeys": {
+      "types": "./dist/passkeys.d.ts",
+      "import": "./dist/passkeys.js"
+    },
     "./package.json": "./package.json"
   },
   "files": [
@@ -32,18 +36,25 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "node test/act-as.mjs && node test/access.mjs && node test/grants.mjs && node test/routes.mjs && node test/loader.mjs && node test/tokens.mjs && node test/reset.mjs && node test/oidc.mjs"
+    "test": "node test/act-as.mjs && node test/access.mjs && node test/grants.mjs && node test/routes.mjs && node test/loader.mjs && node test/tokens.mjs && node test/reset.mjs && node test/oidc.mjs && node test/passkeys.mjs"
   },
   "engines": {
     "node": ">=20"
   },
   "peerDependencies": {
     "argon2": ">=0.31.0",
-    "drizzle-orm": ">=0.38.0"
+    "drizzle-orm": ">=0.38.0",
+    "@simplewebauthn/server": ">=13"
   },
   "devDependencies": {
+    "@simplewebauthn/server": "^13.3.3",
     "@types/node": "^22.0.0",
     "argon2": "^0.44.0",
     "drizzle-orm": "^0.45.0"
+  },
+  "peerDependenciesMeta": {
+    "@simplewebauthn/server": {
+      "optional": true
+    }
   }
 }
