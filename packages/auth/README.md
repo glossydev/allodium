@@ -84,6 +84,16 @@ session is actually gone (a 500 with cookies intact otherwise); and a POST from 
 that is neither this host nor allowlisted, or with a body not typed as JSON, is refused
 — CORS headers say who may read a response, not who may send a request.
 
+**Refreshing from middleware or a fetch wrapper.** There is no package piece for the
+client side of refresh, on purpose: where the retry lives (a Next proxy, a fetch
+wrapper, a React query layer) is the application's shape, and the hard part is already
+on the server. Rotation is single-use and atomic, so when several requests see an
+expired access token and all call `/refresh`, exactly one wins and the rest get 401
+*without their cookies being cleared*. The client rule is therefore one line: on a 401
+from `/refresh`, do not sign out — re-read the cookies, which the winner has already
+replaced, and retry the original request once. Dedupe concurrent refreshes in-process if
+you like (a promise keyed by the refresh token), but correctness does not depend on it.
+
 ## Optional entry points
 
 Two flows every application rewrites, shipped as separate imports so a project that wants

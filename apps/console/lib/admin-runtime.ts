@@ -2,6 +2,7 @@ import 'server-only';
 import { createViewResolver } from '@allodium/admin/server';
 import { getDb } from './db';
 import { maskPolicy } from './masking';
+import { loadViewForTable } from './views';
 
 /**
  * The console mounts the admin runtime so a definition can be previewed against
@@ -20,6 +21,8 @@ export function getViewResolver() {
   // -pinned, unauthenticated, running as super_admin by design. A deployed
   // dashboard passes a real policy here, and the resolver requires the choice to
   // be made rather than defaulting to one — the wrong default is an open admin API.
-  g.__allodiumViewResolver ??= createViewResolver(getDb().pool, { access: 'unrestricted', masking: maskPolicy });
+  // `views` lets a relation with no display of its own borrow the target view's,
+  // so the preview labels exactly as a deployed dashboard with the same files would.
+  g.__allodiumViewResolver ??= createViewResolver(getDb().pool, { access: 'unrestricted', masking: maskPolicy, views: { loadForTable: loadViewForTable } });
   return g.__allodiumViewResolver;
 }

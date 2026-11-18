@@ -238,9 +238,34 @@ export interface ViewResolver {
 
 export function createViewResolver(
   db: Queryable,
-  opts: { access: AccessConfig; schema?: string; ttlMs?: number; masking?: MaskOptions | MaskPolicy }
+  opts: {
+    access: AccessConfig;
+    schema?: string;
+    ttlMs?: number;
+    masking?: MaskOptions | MaskPolicy;
+    /**
+     * Where other tables' screens live, so a relation with no `display` of its
+     * own can borrow the target view's. A table describes itself once, in its
+     * own view's `display`, and every screen that points at it inherits that —
+     * which is the whole reason `display` sits on the view and not only on the
+     * relation. Pass the same store the routes use, or a function from table
+     * name to display template.
+     */
+    views?: { loadForTable(name: string, table: string): Promise<ViewDefinition> } | ((table: string) => Promise<string | null | undefined>);
+  }
 ): ViewResolver {
   const introspector = createIntrospector(db, opts);
+
+  /** The display template the TARGET table declares for itself, if any. */
+  const displayFor = async (table: string): Promise<string | undefined> => {
+    if (!opts.views) return undefined;
+    try {
+      if (typeof opts.views === 'function') return (await opts.views(table)) ?? undefined;
+      return (await opts.views.loadForTable(table, table)).display ?? undefined;
+    } catch {
+      return undefined; // a corrupt or missing target view costs a label, not the screen
+    }
+  };
 
   // A caller may pass either options for the built-in policy or a policy outright.
   // Masking is ON by default and there is no way to switch it off wholesale: an
@@ -386,7 +411,7 @@ export function createViewResolver(
         sortable: false,
         filterable: false,
         widget: f.widget ?? 'checkboxes',
-        source: { table: f.farTable, value: farValue, display: f.display },
+        source: { table: f.farTable, value: farValue, display: f.display ?? (await displayFor(f.farTable)) },
       };
     }
 
@@ -412,7 +437,9 @@ export function createViewResolver(
         help,
         required,
         widget: f.widget ?? 'select',
-        source: { table: f.relation.table, value, display: f.relation.display, filter: normalizeFilter(f.relation.filter) },
+        // The field's own display wins; otherwise the target view's, which is where a
+        // table says how it should be labelled; otherwise the referenced column.
+        source: { table: f.relation.table, value, display: f.relation.display ?? (await displayFor(f.relation.table)), filter: normalizeFilter(f.relation.filter) },
       };
     }
 

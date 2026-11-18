@@ -154,6 +154,25 @@ if (!process.env.DATABASE_URL) {
     ok('a filter on an unknown field is 400, not 500', (await call('GET', ['posts', 'list'], { query: 'filter=nope:eq:1' })).status === 400);
     ok('invalid JSON on a write is 400', (await routes.handle(new Request('http://api.test/posts/record', { method: 'POST', headers: { 'x-actor': JSON.stringify(support), 'Content-Type': 'application/json' }, body: '{nope' }), ['posts', 'record'])).status === 400);
 
+    /* -------------- a relation borrows the target view's display -------------- */
+    // authors.view.json says display: "name". A posts screen that points at
+    // authors without saying how to label them inherits that; a resolver with
+    // no view store falls back to the referenced column, as it always did.
+    const bare = { table: 'posts', fields: [{ column: 'id' }, { kind: 'relation', column: 'author_id', relation: { table: 'authors' } }] };
+    const withViews = createViewResolver(pool, { access: policy, views });
+    const borrowed = await withViews.list(bare, { actor: PUBLIC_ACTOR, pageSize: 5 });
+    const [{ name: someAuthor }] = await raw('select name from authors where id = $1', [borrowed.rows[0].author_id]);
+    ok('a relation with no display borrows the target view\'s', borrowed.rows[0].author_id__label === someAuthor, `${borrowed.rows[0].author_id__label} vs ${someAuthor}`);
+    const plain = await resolver.list(bare, { actor: PUBLIC_ACTOR, pageSize: 5 });
+    ok('...and without a view store falls back to the referenced column', plain.rows[0].author_id__label === String(plain.rows[0].author_id), String(plain.rows[0].author_id__label));
+    const explicit = await withViews.list({ ...bare, fields: [{ column: 'id' }, { kind: 'relation', column: 'author_id', relation: { table: 'authors', display: 'email' } }] }, { actor: PUBLIC_ACTOR, pageSize: 5 });
+    ok('...while the field\'s own display still wins', /@/.test(String(explicit.rows[0].author_id__label)));
+    const byFn = createViewResolver(pool, { access: policy, views: async (t) => (t === 'authors' ? '{name} <{email}>' : undefined) });
+    const fnLabel = String((await byFn.list(bare, { actor: PUBLIC_ACTOR, pageSize: 1 })).rows[0].author_id__label);
+    ok('a function works as the source of displays too (template columns joined by a space)', fnLabel.includes('@') && fnLabel.includes(' '), fnLabel);
+    const m2mBorrow = await withViews.read({ table: 'posts', fields: [{ column: 'id' }, { kind: 'm2m', through: 'post_tags', near: 'post_id', far: 'tag_id', farTable: 'tags' }] }, 1, PUBLIC_ACTOR);
+    ok('a many-to-many borrows the far view\'s display for its options', (await withViews.options({ table: 'posts', fields: [{ column: 'id' }, { kind: 'm2m', through: 'post_tags', near: 'post_id', far: 'tag_id', farTable: 'tags' }] }, 'tags', { actor: PUBLIC_ACTOR })).every((o) => typeof o.label === 'string' && o.label !== String(o.value)) && m2mBorrow !== null);
+
     /* ------------------------ a machine caller, by token ------------------------ */
     // No cookie, no browser: a bearer token resolves to an identity, the app
     // turns it into an actor exactly as it would a session, and the grant
