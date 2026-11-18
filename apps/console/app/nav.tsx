@@ -9,6 +9,7 @@ const SILOS: { href: string; label: string }[] = [
   { href: '/content', label: 'Content' },
   { href: '/users', label: 'Users' },
   { href: '/roles', label: 'Roles & Permissions' },
+  { href: '/tokens', label: 'API tokens' },
   { href: '/files', label: 'Files' },
   { href: '/sql', label: 'SQL' },
   { href: '/admin-builder', label: 'Admin Builder' },

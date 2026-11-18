@@ -88,6 +88,7 @@ optimized for developers: find specific things fast AND expose lots of data to s
 | Content | `app/content/**`, `app/api/content/**` |
 | Users | `app/users/**`, `app/api/users/**` |
 | Roles & Permissions | `app/roles/**`, `app/api/roles/**` |
+| API tokens | `app/tokens/**`, `app/api/tokens/**`, `lib/tokens.ts` — bearer tokens for machine callers over `@allodium/auth`'s `createApiTokens`; the plaintext is returned once at minting and never stored |
 | Files | `app/files/**`, `app/api/files/**` |
 | SQL | `app/sql/**`, `app/api/sql/**` |
 | Admin Builder | `app/admin-builder/**`, `app/api/admin-views/**`, `app/api/admin/**`, `lib/views.ts`, `lib/view-builder.ts`, `lib/admin-runtime.ts` |
