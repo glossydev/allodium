@@ -30,8 +30,8 @@ Each package documents its own API and, more usefully, why its decisions were ma
   the headers that stop an upload becoming an XSS
 - **[@allodium/admin](../packages/admin/README.md)** — admin screens from a small JSON
   file, rendered by unstyled components
-- **[@allodium/from-directus](../packages/from-directus/README.md)** — the exit ramp
-  (scaffolding)
+- **[@allodium/from-directus](../packages/from-directus/README.md)** — the exit ramp:
+  inventory, view drafts, grant translation, the cutover transaction, the file check
 
 ## The developer console
 

@@ -1,8 +1,13 @@
 {
   "name": "@allodium/from-directus",
-  "version": "0.0.2",
-  "description": "Scaffolding (0.0.1): the planned exit ramp from Directus — schema puller, user and file adopters. Nothing is implemented yet; the README says what is intended.",
+  "version": "0.1.0",
+  "description": "The exit ramp from Directus: inventory a Directus database, draft admin views from its field metadata, translate its permissions into role grants (exactly, or not at all), and generate the one-transaction cutover that adopts users, roles and files with ids and password hashes preserved.",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/glossydev/allodium.git",
+    "directory": "packages/from-directus"
+  },
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -18,9 +23,16 @@
   ],
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "typecheck": "tsc -p tsconfig.json --noEmit"
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "node test/filters.mjs && node test/directus.mjs"
   },
   "engines": {
     "node": ">=20"
+  },
+  "devDependencies": {
+    "@allodium/admin": "^0.6.0",
+    "@allodium/auth": "^0.6.0",
+    "@types/node": "^22.0.0",
+    "pg": "^8.13.0"
   }
 }

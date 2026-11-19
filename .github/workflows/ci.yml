@@ -53,3 +53,51 @@ jobs:
       # nothing else can catch: view.schema.json and src/view.ts declare the same
       # format twice and neither imports the other.
       - run: npm test
+
+  # The from-directus live battery needs a real Directus. This job boots Directus 11
+  # against its own database, builds the fixture through the REST API, then inspects,
+  # plans, and runs the generated cutover inside a rolled-back transaction.
+  directus:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: allodium
+          POSTGRES_PASSWORD: localdev
+          POSTGRES_DB: directus_test
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd pg_isready --health-interval 5s --health-timeout 5s --health-retries 12
+    env:
+      DIRECTUS_DATABASE_URL: postgresql://allodium:localdev@localhost:5432/directus_test
+      DIRECTUS_URL: http://localhost:8055
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Start Directus 11
+        run: |
+          docker run -d --name directus --network host \
+            -e KEY=ci-key-0123456789 -e SECRET=ci-secret-0123456789abcdef \
+            -e ADMIN_EMAIL=admin@example.com -e ADMIN_PASSWORD=adminpassword \
+            -e DB_CLIENT=pg -e DB_HOST=localhost -e DB_PORT=5432 \
+            -e DB_DATABASE=directus_test -e DB_USER=allodium -e DB_PASSWORD=localdev \
+            -e PUBLIC_URL=http://localhost:8055 -e LOG_LEVEL=warn \
+            directus/directus:11
+
+      - run: npm ci
+      # The battery imports @allodium/admin and @allodium/auth from their dist.
+      - run: npm run build
+
+      - name: Build the fixture
+        run: node packages/from-directus/test/fixture.mjs
+
+      - name: Live battery
+        run: npm test -w packages/from-directus
+
+      - if: failure()
+        run: docker logs directus | tail -100

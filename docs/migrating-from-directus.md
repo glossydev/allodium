@@ -177,6 +177,11 @@ closes the resurrection window.
   for the screens your team used Studio for. ChapterHub kept a Studio-equivalent console
   running before it decommissioned, and so should you.
 
-The `@allodium/from-directus` package is still scaffolding: the schema puller and the user
-and file adopters it describes are the tooling version of phases 1, 4 and 5 above. Until it
-exists, this document is the tool.
+- **Phases 1, 4, 5 and 6:** [`@allodium/from-directus`](../packages/from-directus/README.md)
+  — `inspect` is the inventory (fields with their notes and choices, relations, roles and
+  permission filters, flows, user and file counts, and the warnings list); `planViews`
+  drafts the admin screens from the metadata; `planGrants` translates permissions into
+  `role_permissions` exactly or leaves them out and says why; `planDecommission` generates
+  the transaction above from the live schema, with the drops ordered from the real FK graph;
+  `fileManifest`/`checkFiles` prove the uploads copy. Everything it produces is JSON or SQL
+  you review; it runs nothing. Phases 2 and 3 stay yours by design.

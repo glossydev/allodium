@@ -59,7 +59,7 @@ What that path enforces, and refuses to get wrong:
 | `@allodium/auth` | First-party auth you own, all factories: argon2id passwords, a session store with atomic refresh rotation and cross-surface scoping, the four auth routes as `Request → Response` handlers, the grant model and its loader, reset tokens, rate limiting, [act as](./docs/act-as.md) | 0.3 |
 | `@allodium/storage` | A three-method byte store (local disk now, S3-compatible later) and the headers that stop an upload becoming a script on your origin | 0.2 |
 | `@allodium/admin` | The dashboard lane: the view format and its JSON Schema, a resolver that turns a definition plus the caller's grants into SQL, route handlers, uploads, and unstyled React hooks and components you point CSS at | 0.4 |
-| `@allodium/from-directus` | Tooling for arriving from an existing CMS: schema puller, data importer with password hashes intact, a compat shim for porting routes one at a time | scaffolding |
+| `@allodium/from-directus` | The exit ramp from an existing CMS: inventory its metadata, draft admin views from the decisions already made there, translate permissions into grants exactly or not at all, and generate the one-transaction cutover that adopts users (password hashes intact), roles and files with ids preserved | 0.1 |
 
 Every package is ESM, reads no environment variables, and declares no runtime dependencies — only peers you already have. Releases are published from CI by trusted publishing, with a signed provenance attestation on every tarball linking it to the commit that built it. No publishing token exists anywhere.
 
