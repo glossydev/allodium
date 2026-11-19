@@ -102,8 +102,10 @@ happen:
 
 - a role's policies are unioned, as Directus does at request time;
 - an unfiltered permission beats a filtered one for the same action;
-- two different filters for one table × action is an OR, which cannot be stated: the grant
-  is **left out** and listed in `unexpressible`;
+- two different filters for one table × action inside **one** role is an OR that a single
+  `role_permissions` row cannot state: the grant is **left out** and listed in
+  `unexpressible`. The fix is to split the role; `@allodium/auth` unions grants across the
+  roles a person holds, so the two filters coexist once they are two roles;
 - when actions on one table carry different filters, the grant takes the read filter and
   refuses the others rather than widen them;
 - `$CURRENT_USER` becomes `$actor.userId`; `{ author: { user: { _eq } } }` becomes the FK

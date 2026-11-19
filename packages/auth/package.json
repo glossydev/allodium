@@ -1,6 +1,6 @@
 {
   "name": "@allodium/auth",
-  "version": "0.6.0",
+  "version": "0.7.0",
   "description": "First-party auth you own: argon2id passwords, a session store with rotating refresh and cross-surface scoping, the four auth routes, role and row-level grants, reset and state tokens, rate limiting, act-as.",
   "license": "MIT",
   "repository": {

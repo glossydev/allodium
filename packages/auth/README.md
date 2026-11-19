@@ -222,13 +222,24 @@ const policy = await grants.policy();              // cached 30 s; grants.refres
 const actor = await grants.actorFor(userId, { customerId: 42 });
 
 policy.can(actor, 'orders', 'read');
-// → { allowed: true, scope: [{ column: 'customer_id', op: 'eq', value: 42 }], reason: '…' }
+// → { allowed: true, scopes: [[{ column: 'customer_id', op: 'eq', value: 42 }]], scope: [...], reason: '…' }
 policy.can(PUBLIC_ACTOR, 'orders', 'read');
-// → { allowed: false, scope: [], reason: 'no grant for read on orders (holding: public)' }
+// → { allowed: false, scopes: [], scope: [], reason: 'no grant for read on orders (holding: public)' }
 ```
 
 A `row_filter` on a grant is a JSON array of predicates; `$actor.<claim>` substitutes a
-claim the app supplied, and a missing claim **denies**. A predicate's column may be a
+claim the app supplied, and a missing claim **denies**.
+
+Grants **union across roles**: holding a second role never takes access away. One
+unrestricted grant covers every row; otherwise each distinct row filter becomes one
+group in `scopes`, and a row inside *any* group is permitted — "support sees every
+order in region A" and "a member sees their own" can sit on one person. `scope` is the
+single group for the common case; on a decision with several groups it throws rather
+than hand back one of them, because no single conjunction can stand for a union. A
+group whose claim the actor lacks drops out of the union (which only narrows); when
+none remain the actor is refused.
+
+A predicate's column may be a
 **path through foreign keys** when the owner lives on another table — the tasks whose
 project belongs to this client:
 

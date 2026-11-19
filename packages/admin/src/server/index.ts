@@ -6,7 +6,7 @@
  * handlers wherever your app puts routes; the package never assumes Next.js.
  */
 
-export { createViewResolver, type ViewResolver, type ResolvedView, type ResolvedField, type ListResult } from './resolver.js';
+export { createViewResolver, type ViewResolver, type ResolvedView, type ResolvedField, type ListResult, type GrantScopes } from './resolver.js';
 export {
   createIntrospector,
   asJoinTable,

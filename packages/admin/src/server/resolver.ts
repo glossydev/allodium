@@ -118,17 +118,35 @@ const err = (m: string) => new Error(m);
  *
  * Structural rather than imported: `@allodium/auth` owns the decision, and the
  * admin runtime must not depend on auth — the content API needs the same gate
- * without the admin runtime. `scope` is typed wider than `Predicate` on purpose
- * so an auth policy is assignable; the operators are checked at the boundary
- * instead, where an unsupported one can be refused rather than dropped.
+ * without the admin runtime. The predicates are typed wider than `Predicate` on
+ * purpose so an auth policy is assignable; the operators are checked at the
+ * boundary instead, where an unsupported one can be refused rather than dropped.
+ *
+ * `scopes` is a disjunction of conjunctions — a row is granted when every
+ * predicate of any one group holds — and is what this layer reads. A policy
+ * from before disjunction existed carries only `scope`, the single group; it is
+ * accepted as `[scope]`. A refusal is `allowed: false`, never an empty scope.
  */
 export interface AccessPolicyLike {
   can(
     actor: unknown,
     table: string,
     action: 'create' | 'read' | 'update' | 'delete'
-  ): { allowed: boolean; scope: { column: string; op?: string; value?: unknown }[]; reason: string };
+  ): {
+    allowed: boolean;
+    scopes?: { column: string; op?: string; value?: unknown }[][];
+    scope?: { column: string; op?: string; value?: unknown }[];
+    reason: string;
+  };
 }
+
+/**
+ * Granted rows, as the gate hands them on: groups of predicates, ANDed within
+ * a group and ORed across groups. `[[]]` is every row.
+ */
+export type GrantScopes = Predicate[][];
+const EVERY_ROW: GrantScopes = [[]];
+const coversEveryRow = (scopes: GrantScopes) => scopes.some((g) => g.length === 0);
 
 /**
  * Who may do what. REQUIRED, with no default.
@@ -228,11 +246,13 @@ export interface ViewResolver {
   /** Selectable rows for a relation/m2m field — a read of the TARGET table, gated and row-scoped for the actor. */
   options(def: ViewDefinition, fieldKeyName: string, opts?: { search?: string; limit?: number; actor?: unknown }): Promise<{ value: unknown; label: string }[]>;
   /**
-   * The gate alone: throws "Not permitted" or returns the granted row scope.
-   * For callers that need the decision before doing anything — a route deciding
-   * whether to describe a screen's shape at all — without paying for a query.
+   * The gate alone: throws "Not permitted" or returns the granted row scopes —
+   * groups of predicates, ANDed within a group and ORed across groups, `[[]]`
+   * for every row. For callers that need the decision before doing anything — a
+   * route deciding whether to describe a screen's shape at all — without paying
+   * for a query.
    */
-  authorize(def: ViewDefinition, action: 'create' | 'read' | 'update' | 'delete', actor?: unknown): Promise<Predicate[]>;
+  authorize(def: ViewDefinition, action: 'create' | 'read' | 'update' | 'delete', actor?: unknown): Promise<GrantScopes>;
   introspector: Introspector;
 }
 
@@ -286,22 +306,38 @@ export function createViewResolver(
    * none" are different answers, and a caller that cannot tell them apart will
    * show an empty screen to someone who should have been told no.
    */
-  const gate = (actor: unknown, table: string, action: 'create' | 'read' | 'update' | 'delete'): Predicate[] => {
-    if (access === 'unrestricted') return [];
+  const gate = (actor: unknown, table: string, action: 'create' | 'read' | 'update' | 'delete'): GrantScopes => {
+    if (access === 'unrestricted') return EVERY_ROW;
     if (actor === undefined || actor === null) {
       throw err(`Not permitted: ${action} on ${table} needs an actor, and none was supplied`);
     }
     const decision = access.can(actor, table, action);
     if (!decision.allowed) throw err(`Not permitted: ${decision.reason}`);
+    const scopes = decisionScopes(decision);
+    if (!scopes) throw err(`Not permitted: the decision for ${action} on ${table} carried no row scope`);
     // A granted predicate this layer cannot express must DENY. Skipping it would
     // widen the grant to every row — the same failure as dropping an unresolved
     // claim, one layer further down, and just as silent.
-    for (const p of decision.scope) {
-      if (p.op !== undefined && !FILTER_OPS.includes(p.op as FilterOp)) {
-        throw err(`Not permitted: the grant for ${action} on ${table} uses an unsupported comparison "${p.op}"`);
+    for (const g of scopes) {
+      for (const p of g) {
+        if (p.op !== undefined && !FILTER_OPS.includes(p.op as FilterOp)) {
+          throw err(`Not permitted: the grant for ${action} on ${table} uses an unsupported comparison "${p.op}"`);
+        }
       }
     }
-    return decision.scope as Predicate[];
+    return scopes;
+  };
+
+  /**
+   * The groups a decision carries. `scopes` when the policy speaks disjunction;
+   * `[scope]` from an older policy that could carry only one group. A decision
+   * with neither is malformed, and the caller refuses — an allowed decision with
+   * no scope at all must not read as "every row".
+   */
+  const decisionScopes = (d: ReturnType<AccessPolicyLike['can']>): GrantScopes | null => {
+    if (Array.isArray(d.scopes)) return d.scopes.length ? (d.scopes as GrantScopes) : null;
+    if (Array.isArray(d.scope)) return [d.scope as Predicate[]];
+    return null;
   };
 
   /**
@@ -315,15 +351,19 @@ export function createViewResolver(
    * restricting customers to your own must not print every customer's name down
    * an orders list.
    */
-  const labelScope = (actor: unknown, table: string): Predicate[] | null => {
-    if (access === 'unrestricted') return [];
+  const labelScope = (actor: unknown, table: string): GrantScopes | null => {
+    if (access === 'unrestricted') return EVERY_ROW;
     if (actor === undefined || actor === null) return null;
     const decision = access.can(actor, table, 'read');
     if (!decision.allowed) return null;
-    for (const p of decision.scope) {
-      if (p.op !== undefined && !FILTER_OPS.includes(p.op as FilterOp)) return null;
+    const scopes = decisionScopes(decision);
+    if (!scopes) return null;
+    for (const g of scopes) {
+      for (const p of g) {
+        if (p.op !== undefined && !FILTER_OPS.includes(p.op as FilterOp)) return null;
+      }
     }
-    return decision.scope as Predicate[];
+    return scopes;
   };
 
   /**
@@ -967,17 +1007,37 @@ export function createViewResolver(
     return sql;
   }
 
-  /** Granted predicates as SQL fragments, in order, checked against the TABLE (and, for paths, the tables they reach). */
-  async function grantSql(granted: Predicate[], meta: TableMeta, params: unknown[], prefix: string): Promise<string[]> {
-    const out: string[] = [];
-    for (const p of granted) {
-      const sql = await grantPredicateSql(p, meta, params, prefix);
-      if (sql) out.push(sql);
+  /**
+   * Granted rows as SQL fragments to AND into a WHERE, checked against the TABLE
+   * (and, for paths, the tables they reach).
+   *
+   * One group compiles to its predicates, one fragment each. Several groups —
+   * an actor holding two roles that restrict the table differently — compile to
+   * ONE fragment, `((a and b) or (c))`: the union of what each role allows. This
+   * is the single place disjunction enters the SQL; the operator's own filters
+   * stay AND-only, because that is the view's filter language by design. A group
+   * with nothing in it covers every row, and so does any union containing one.
+   */
+  async function grantSql(granted: GrantScopes, meta: TableMeta, params: unknown[], prefix: string): Promise<string[]> {
+    if (coversEveryRow(granted)) return [];
+    const groups: string[] = [];
+    for (const g of granted) {
+      const parts: string[] = [];
+      for (const p of g) {
+        const sql = await grantPredicateSql(p, meta, params, prefix);
+        // The gate refused unknown operators already; a predicate that still
+        // compiles to nothing must not vanish, because inside a disjunction an
+        // empty group is "every row".
+        if (!sql) throw err(`Not permitted: the grant on ${meta.name} has a predicate on ${p.column} this layer cannot compile`);
+        parts.push(sql);
+      }
+      groups.push(parts.join(' and '));
     }
-    return out;
+    if (groups.length === 1) return [groups[0]];
+    return [`(${groups.map((g) => `(${g})`).join(' or ')})`];
   }
 
-  async function grantClauses(granted: Predicate[], meta: TableMeta, params: unknown[], prefix = 't.'): Promise<string> {
+  async function grantClauses(granted: GrantScopes, meta: TableMeta, params: unknown[], prefix = 't.'): Promise<string> {
     const out = await grantSql(granted, meta, params, prefix);
     return out.length ? ' and ' + out.join(' and ') : '';
   }
@@ -992,8 +1052,10 @@ export function createViewResolver(
    * transaction, and roll the write back if it landed outside. That check is
    * also what makes a row-restricted create possible: write it, then look.
    */
-  async function assertWithinGrant(exec: Queryable, meta: TableMeta, pk: string, id: unknown, granted: Predicate[], action: 'create' | 'update'): Promise<void> {
-    if (!granted.length) return;
+  async function assertWithinGrant(exec: Queryable, meta: TableMeta, pk: string, id: unknown, granted: GrantScopes, action: 'create' | 'update'): Promise<void> {
+    // A row inside ANY group is inside the grant: the same union the reads use,
+    // through the same compiler, so a write cannot land where a read could not see.
+    if (coversEveryRow(granted)) return;
     const params: unknown[] = [id];
     const scoped = await grantClauses(granted, meta, params, '');
     const res = await exec.query(`select 1 from ${qid(meta.name)} where ${qid(pk)} = $1${scoped} limit 1`, params);
@@ -1047,7 +1109,7 @@ export function createViewResolver(
       if (scope === null) continue;
       const params: unknown[] = [String(id)];
       let narrowed = '';
-      if (scope.length) {
+      if (!coversEveryRow(scope)) {
         let inner: string;
         try {
           inner = await grantClauses(scope, await tableOrThrow(f.source.table), params, '');
@@ -1262,7 +1324,7 @@ export function createViewResolver(
     if (!res.rowCount) throw err('Row not found');
   }
 
-  async function authorize(def: ViewDefinition, action: 'create' | 'read' | 'update' | 'delete', actor?: unknown): Promise<Predicate[]> {
+  async function authorize(def: ViewDefinition, action: 'create' | 'read' | 'update' | 'delete', actor?: unknown): Promise<GrantScopes> {
     return gate(actor, def.table, action);
   }
 

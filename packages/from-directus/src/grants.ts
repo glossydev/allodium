@@ -8,7 +8,9 @@
  *   - a role's policies are unioned (that is what Directus does at request time);
  *   - a permission with an empty filter beats a filtered one for the same action;
  *   - two different filters for the same table × action within a role are an OR,
- *     which cannot be stated — the grant is LEFT OUT and reported;
+ *     which one role_permissions row cannot state (unique on role × table) — the
+ *     grant is LEFT OUT and reported. Auth unions grants ACROSS roles, so the
+ *     remedy is to split the role, not to pick a filter;
  *   - when the actions on a table carry different filters, the grant takes the read
  *     filter and reports the others, because a flag without a filter would widen reach.
  *
@@ -115,7 +117,7 @@ export function planGrants(inv: Inventory, opts: GrantsPlanOptions = {}): Grants
         }
         const distinct = [...new Map(perms.map((p) => [JSON.stringify(p.filter), p.filter])).values()];
         if (distinct.length > 1) {
-          unexpressible.push({ roleKey: s.key, table, action, reason: `${distinct.length} policies grant ${action} with different filters — their OR cannot be stated; merge the policies or split the role`, filter: distinct });
+          unexpressible.push({ roleKey: s.key, table, action, reason: `${distinct.length} policies grant ${action} with different filters — one grant row cannot state their OR; split the role (grants union across the roles a person holds) or merge the policies`, filter: distinct });
           continue;
         }
         try {

@@ -120,24 +120,59 @@ const OWN_ORDERS = [{ column: 'customer_id', op: 'eq', value: '$actor.customerId
   ok('a non-$actor value passes through', literal.can(actor(['member']), 'orders', 'read').scope[0].value === 'paid');
 }
 
-/* ------------------ two restrictions cannot be ORed -------------------- */
+/* ------------------ two restrictions are ORed, as groups ---------------- */
 {
-  // The scope channel is AND-only, so a union of two different row filters is
-  // inexpressible. Picking one would quietly be wrong in somebody's favour.
+  // A person holding two roles that restrict the same table differently may
+  // touch the UNION of what each allows — holding a second role never takes
+  // access away. The decision carries that as groups: AND within, OR across.
+  const REP_ORDERS = [{ column: 'rep_id', op: 'eq', value: '$actor.userId' }];
   const p = createAccessPolicy([
     grant('member', 'orders', ['read'], OWN_ORDERS),
-    grant('rep', 'orders', ['read'], [{ column: 'rep_id', op: 'eq', value: '$actor.userId' }]),
+    grant('rep', 'orders', ['read'], REP_ORDERS),
   ]);
-  const d = p.can(actor(['member', 'rep'], { customerId: 7 }), 'orders', 'read');
-  ok('conflicting row filters refuse', !d.allowed);
-  ok('...and the reason says how to fix it', /cannot be combined/.test(d.reason), d.reason);
+  const d = p.can(actor(['member', 'rep'], { customerId: 7 }, 'user-9'), 'orders', 'read');
+  ok('two different row filters are allowed together', d.allowed, d.reason);
+  ok('...as two groups', d.scopes.length === 2, JSON.stringify(d.scopes));
+  ok('...each with its claims substituted',
+    d.scopes.some((g) => g[0].column === 'customer_id' && g[0].value === 7) && d.scopes.some((g) => g[0].column === 'rep_id' && g[0].value === 'user-9'),
+    JSON.stringify(d.scopes));
+  ok('...and the reason names both roles', /"member"/.test(d.reason) && /"rep"/.test(d.reason) && /either/.test(d.reason), d.reason);
 
-  // Identical restrictions on two roles are not a conflict.
+  // There is no single conjunction standing for a union. Handing back one group
+  // would be too narrow, none too wide; a caller written for `scope` must learn
+  // about `scopes` the loud way, not the silent one.
+  let threw = false;
+  try { void d.scope; } catch (e) { threw = /decision\.scopes/.test(String(e.message)); }
+  ok('reading `scope` on a disjunction throws, pointing at `scopes`', threw);
+  ok('...but the decision still serialises for a log line', JSON.parse(JSON.stringify(d)).scopes.length === 2);
+
+  // Single-group decisions keep the old shape exactly.
+  const one = p.can(actor(['member'], { customerId: 7 }), 'orders', 'read');
+  ok('a single group is both `scope` and `scopes[0]`', one.scopes.length === 1 && one.scopes[0] === one.scope);
+  ok('an unrestricted decision is one empty group', JSON.stringify(createAccessPolicy([grant('s', 'orders', ['read'])]).can(actor(['s']), 'orders', 'read').scopes) === '[[]]');
+  ok('a refusal has no groups at all', p.can(actor(['nobody']), 'orders', 'read').scopes.length === 0);
+
+  // Identical restrictions on two roles are ONE group, not two.
   const same = createAccessPolicy([
     grant('member', 'orders', ['read'], OWN_ORDERS),
     grant('vip', 'orders', ['read'], OWN_ORDERS),
   ]);
-  ok('identical row filters are fine', same.can(actor(['member', 'vip'], { customerId: 3 }), 'orders', 'read').allowed);
+  const dup = same.can(actor(['member', 'vip'], { customerId: 3 }), 'orders', 'read');
+  ok('identical row filters collapse to one group', dup.allowed && dup.scopes.length === 1 && dup.scope.length === 1, JSON.stringify(dup.scopes));
+
+  // An unrestricted role still ends it: the union with every row is every row.
+  const wide = createAccessPolicy([grant('member', 'orders', ['read'], OWN_ORDERS), grant('rep', 'orders', ['read'], REP_ORDERS), grant('support', 'orders', ['read'])]);
+  ok('one unrestricted role makes the union every row', JSON.stringify(wide.can(actor(['member', 'rep', 'support'], { customerId: 7 }), 'orders', 'read').scopes) === '[[]]');
+
+  // A group this actor cannot satisfy drops OUT of the union — which only ever
+  // narrows. The remaining group stands; with none remaining the actor is refused,
+  // never widened to every row.
+  const partial = p.can(actor(['member', 'rep'], {}, 'user-9'), 'orders', 'read');
+  ok('a group whose claim is missing is left out', partial.allowed && partial.scopes.length === 1 && partial.scope[0].column === 'rep_id', JSON.stringify(partial.scopes));
+  ok('...and the reason says so', /customerId/.test(partial.reason), partial.reason);
+  const none = p.can({ userId: null, roles: ['member', 'rep'], claims: {} }, 'orders', 'read');
+  ok('when every group is unsatisfiable the actor is refused', !none.allowed && none.scopes.length === 0);
+  ok('...naming each missing claim', /customerId/.test(none.reason) && /userId/.test(none.reason), none.reason);
 }
 
 /* ----------------------------- anonymous ------------------------------- */

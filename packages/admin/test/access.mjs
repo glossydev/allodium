@@ -253,6 +253,78 @@ if (!process.env.DATABASE_URL) {
     ok('with a row scope on it the membership is narrowed', JSON.stringify(someTags?.tags?.map(Number)) === JSON.stringify([Number(tagIds[0])]), JSON.stringify(someTags?.tags));
     ok('the console lane sees every tag', (await open.read(postsView, tagged.post_id))?.tags?.length === tagged.n);
 
+    /* ---------------- two restricted roles: the union of their rows ---------------- */
+    // A member sees their own orders; an auditor sees every cancelled order. One
+    // person holding both sees both sets — and nothing outside them — through
+    // every path: list, read, update, the post-write check, create, pickers.
+    {
+      const AUDIT_STATUS = 'cancelled';
+      const twoRoles = createViewResolver(pool, {
+        access: createAccessPolicy([
+          grant('member', 'orders', ['create', 'read', 'update'], [{ column: 'customer_id', op: 'eq', value: '$actor.customerId' }]),
+          grant('auditor', 'orders', ['create', 'read', 'update'], [{ column: 'status', op: 'eq', value: AUDIT_STATUS }]),
+        ]),
+      });
+      const dual = actor(['member', 'auditor'], { customerId: customer.customer_id });
+      const [{ n: unionN }] = await raw('select count(*)::int as n from orders where customer_id = $1 or status = $2', [customer.customer_id, AUDIT_STATUS]);
+      const [{ n: auditN }] = await raw('select count(*)::int as n from orders where status = $1', [AUDIT_STATUS]);
+      ok('the fixture has cancelled orders outside the member\'s own', unionN > customer.n && unionN > auditN && unionN < allOrders, `${customer.n} + ${auditN} → ${unionN} of ${allOrders}`);
+
+      const union = await twoRoles.list({ table: 'orders' }, { actor: dual, pageSize: 500 });
+      ok('two restricted roles list the union of their rows', union.total === unionN, `${union.total} vs ${unionN}`);
+      ok('...and every row is inside one group or the other', union.rows.every((r) => String(r.customer_id) === String(customer.customer_id) || r.status === AUDIT_STATUS));
+      ok('...which is more than either role alone', union.total > (await twoRoles.list({ table: 'orders' }, { actor: actor(['member'], { customerId: customer.customer_id }), pageSize: 500 })).total);
+      const stillNarrowed = await twoRoles.list({ table: 'orders' }, { actor: dual, filters: [{ column: 'total', op: 'gt', value: 0 }], pageSize: 500 });
+      ok('the operator\'s filter ANDs with the whole union, not one side of it', stillNarrowed.total <= union.total && stillNarrowed.rows.every((r) => String(r.customer_id) === String(customer.customer_id) || r.status === AUDIT_STATUS));
+
+      const onlyAudit = (await raw('select id, notes, customer_id from orders where status = $1 and customer_id is distinct from $2 limit 1', [AUDIT_STATUS, customer.customer_id]))[0];
+      const neither = (await raw('select id from orders where status is distinct from $1 and customer_id is distinct from $2 limit 1', [AUDIT_STATUS, customer.customer_id]))[0];
+      ok('a row only the second role allows reads', (await twoRoles.read({ table: 'orders' }, onlyAudit.id, dual)) !== null);
+      ok('a row only the first role allows reads', (await twoRoles.read({ table: 'orders' }, own.id, dual)) !== null);
+      ok('a row in neither group reads as absent', (await twoRoles.read({ table: 'orders' }, neither.id, dual)) === null);
+
+      // Writes: the WHERE and the post-write check both take the union.
+      const edited = await twoRoles.update({ table: 'orders' }, onlyAudit.id, { notes: 'audited' }, dual);
+      ok('an update to a row only the second role allows is accepted', edited?.notes === 'audited');
+      await raw('update orders set notes = $2 where id = $1', [onlyAudit.id, onlyAudit.notes]);
+      ok('an update to a row in neither group is not found', await refuses(() => twoRoles.update({ table: 'orders' }, neither.id, { notes: 'x' }, dual), /Row not found/));
+      // Moving a row from one group INTO the other is still inside the grant.
+      const moved = await twoRoles.update({ table: 'orders' }, onlyAudit.id, { customer_id: customer.customer_id }, dual);
+      ok('an update that moves a row from one group into the other is accepted', String(moved?.customer_id) === String(customer.customer_id));
+      ok('...and it really moved', String((await raw('select customer_id from orders where id = $1', [onlyAudit.id]))[0].customer_id) === String(customer.customer_id));
+      await raw('update orders set customer_id = $2 where id = $1', [onlyAudit.id, onlyAudit.customer_id]);
+      ok('an update that moves a row out of BOTH groups is refused',
+        await refuses(() => twoRoles.update({ table: 'orders' }, own.id, { customer_id: otherCustomer.id, status: 'pending' }, dual), /move the row outside/));
+
+      // Create: a row only the second group covers is written and kept.
+      const [{ n: before2 }] = await raw('select count(*)::int as n from orders');
+      const auditMade = await twoRoles.create({ table: 'orders' }, { customer_id: otherCustomer.id, order_number: 'ACC-OR-2', status: AUDIT_STATUS }, dual);
+      ok('a create landing in only the second group is kept', auditMade?.status === AUDIT_STATUS && String(auditMade?.customer_id) === String(otherCustomer.id), JSON.stringify(auditMade));
+      await raw('delete from orders where id = $1', [auditMade.id]);
+      ok('a create landing in neither group rolls back',
+        await refuses(() => twoRoles.create({ table: 'orders' }, { customer_id: otherCustomer.id, order_number: 'ACC-OR-0', status: 'pending' }, dual), /outside the rows you may create/));
+      ok('...leaving the table as it was', (await raw('select count(*)::int as n from orders'))[0].n === before2);
+
+      // The other table: a picker over customers unions two roles' rows too.
+      const twoCustomers = createViewResolver(pool, {
+        access: createAccessPolicy([
+          grant('rep', 'orders', ['read']),
+          grant('rep', 'customers', ['read'], [{ column: 'id', op: 'eq', value: '$actor.customerId' }]),
+          grant('rep2', 'customers', ['read'], [{ column: 'id', op: 'eq', value: otherCustomer.id }]),
+        ]),
+      });
+      const twoPicks = await twoCustomers.options(ordersView, 'customer_id', { actor: actor(['rep', 'rep2'], { customerId: customer.customer_id }) });
+      ok('a picker offers the union of two roles\' rows', twoPicks.length === 2 && twoPicks.map((p) => String(p.value)).sort().join() === [String(customer.customer_id), String(otherCustomer.id)].sort().join(), JSON.stringify(twoPicks));
+      const twoLabels = await twoCustomers.list(ordersView, { actor: actor(['rep', 'rep2'], { customerId: customer.customer_id }), pageSize: 500 });
+      ok('a label resolves for rows inside either group and no others', twoLabels.rows.every((r) => ([String(customer.customer_id), String(otherCustomer.id)].includes(String(r.customer_id))) === (r.customer_id__label !== null)));
+
+      // A missing claim drops that role's group; the other still applies, and
+      // the actor is not widened to the dropped role's whole table.
+      const halfDual = actor(['member', 'auditor'], {});
+      const half = await twoRoles.list({ table: 'orders' }, { actor: halfDual, pageSize: 500 });
+      ok('with one group unsatisfiable, the other alone applies', half.total === auditN && half.rows.every((r) => r.status === AUDIT_STATUS), `${half.total} vs ${auditN}`);
+    }
+
     /* ------------- a grant that reaches its owner through a hop ------------- */
     // order_items has no customer column: its owner is two tables away. A
     // grant may say so with a path through the foreign keys, and every read

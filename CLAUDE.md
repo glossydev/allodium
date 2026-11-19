@@ -49,17 +49,18 @@ seeded by `dev/seed/*.sql` (run 001→004 in order on a fresh database).
 | Package | Version | State |
 |---|---|---|
 | `packages/db` | 0.2.0 | **live in prod** (ChapterHub on 0.1.1, unchanged code) — pool factory (`createDb`/`singleton`), money/numeric, wire mappers (`toWireRow`, pg timestamp normalizer family), `isUniqueViolation` (cause-chain walking) |
-| `packages/auth` | 0.3.0 | **live in prod** — all factories, zero env reads/framework imports: argon2id passwords, `createSessionStore` (atomic single-use rotation, origin scoping, active-user + origin checks on rotate, revoke by either token), `createAuthRoutes` (login/logout/refresh/me, CSRF-gated), `createAccessPolicy`/`createGrantLoader` (role × table × action + row filters, fail-closed), reset/state tokens, cookies, rate limiter, `createActAs`. OIDC/passkeys/reset routes: planned entry points, NOT built |
+| `packages/auth` | 0.7.0 | **live in prod** — all factories, zero env reads/framework imports: argon2id passwords, `createSessionStore` (atomic single-use rotation, origin scoping, active-user + origin checks on rotate, revoke by either token), `createAuthRoutes` (login/logout/refresh/me, CSRF-gated), `createAccessPolicy`/`createGrantLoader` (role × table × action + row filters, fail-closed; 0.7.0: grants UNION across roles — `decision.scopes` is a disjunction of groups, `scope` throws on a multi-group decision), reset/state tokens, cookies, rate limiter, `createActAs`, `createApiTokens`, `./reset`, `./oidc`, `./passkeys` entry points |
 | `packages/storage` | 0.2.0 | **live in prod** — bytes-only disk driver (metadata belongs in the consumer's DB; a sidecar-JSON scaffold was rejected — don't reintroduce), safe-serving helpers (svg-excluded inline set, RFC 5987, cache split) |
-| `packages/admin` | 0.4.0 | **live in prod** — root: `createTableRegistry`. `./view`: the `.view.json` contract + JSON Schema (parity-tested), filters, links. `./server`: resolver (grants, masking, related lists, gated labels/pickers/memberships, post-write grant check), `createAdminRoutes` (+ `_files` uploads), `createFileViewStore`. `./react`: hooks + unstyled components incl. the file widget |
+| `packages/admin` | 0.7.0 | **live in prod** — root: `createTableRegistry`. `./view`: the `.view.json` contract + JSON Schema (parity-tested), filters, links. `./server`: resolver (grants, masking, related lists, gated labels/pickers/memberships, post-write grant check; 0.7.0: `grantSql` is the one place the grant's OR enters the SQL — view/operator filters stay AND-only), `createAdminRoutes` (+ `_files` uploads), `createFileViewStore`. `./react`: hooks + unstyled components incl. the file widget |
 | `packages/from-directus` | 0.1.0 | **real** (2026-11-18) — read-only planners over a Directus DB: `inspect` (inventory), `planViews` (.view.json drafts + COMMENT ON), `planGrants` (permissions → role_permissions, fail-closed filter translation), `planDecommission` (the one-transaction cutover, drops ordered from the FK graph), `fileManifest`/`checkFiles`. Live battery (`test/directus.mjs`, 99 checks) runs against Directus 11 in CI (`directus` job boots the container + `test/fixture.mjs`) and rolls the cutover back. No compat shim, by decision (it is a query compiler). Publishing needs the npm trusted publisher for this package (owner action) |
 | `packages/allodium` | 0.0.1 | npm name reservation; becomes the CLI |
 
 Versions are independent (db/storage move only when they change). Consumers: ChapterHub
 (0.1.x line), AdamAronoff.com (first from-scratch consumer, 0.3/0.4). Releases: tag `vX.Y.Z`
 → `publish.yml` publishes by trusted publishing (OIDC + provenance); no npm token exists.
-Bump the console's `@allodium/*` caret ranges BEFORE `npm version`, or npm installs a
-registry copy under `apps/console/node_modules`.
+Bump EVERY in-repo `@allodium/*` caret range (the console's dependencies AND
+from-directus's devDependencies) BEFORE bumping a package, or npm installs a registry
+copy under that workspace's `node_modules` and the lockfile grows by 40 lines.
 
 ## Conventions
 

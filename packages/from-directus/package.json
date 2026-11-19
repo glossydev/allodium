@@ -30,8 +30,8 @@
     "node": ">=20"
   },
   "devDependencies": {
-    "@allodium/admin": "^0.6.0",
-    "@allodium/auth": "^0.6.0",
+    "@allodium/admin": "^0.7.0",
+    "@allodium/auth": "^0.7.0",
     "@types/node": "^22.0.0",
     "pg": "^8.13.0"
   }

@@ -17,7 +17,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Pool } from 'pg';
 import { createViewResolver, createFileViewStore, createAdminRoutes } from '../dist/server/index.js';
-import { createGrantLoader, createApiTokens, PUBLIC_ACTOR } from '../../auth/dist/index.js';
+import { createGrantLoader, createApiTokens, createAccessPolicy, PUBLIC_ACTOR } from '../../auth/dist/index.js';
 
 let pass = 0;
 let fail = 0;
@@ -114,6 +114,39 @@ if (!process.env.DATABASE_URL) {
     ok("someone else's order is 404, never 403", (await call('GET', ['orders', 'record', String(other.id)], { actor: member })).status === 404);
     ok("...and PATCHing it is 404 too", (await call('PATCH', ['orders', 'record', String(other.id)], { actor: member, body: { notes: 'x' } })).status === 403 || (await call('PATCH', ['orders', 'record', String(other.id)], { actor: member, body: { notes: 'x' } })).status === 404);
     ok('a member with no claim is 403', (await call('GET', ['orders', 'list'], { actor: { ...member, claims: {} } })).status === 403);
+
+    /* ------------- two restricted roles, over HTTP: the union ------------- */
+    // The seed has no second restricted role on orders, so this one policy is
+    // declared inline: a member sees their own orders, an auditor every
+    // cancelled one. One person holding both gets the union — and a row in
+    // neither group is a 404, the same as a row that does not exist.
+    {
+      const grant = (role, table, actions, rowFilter) => ({ role, table, create: actions.includes('create'), read: actions.includes('read'), update: actions.includes('update'), delete: actions.includes('delete'), rowFilter });
+      const dualRoutes = createAdminRoutes({
+        resolver: createViewResolver(pool, {
+          access: createAccessPolicy([
+            grant('member', 'orders', ['read', 'update'], [{ column: 'customer_id', op: 'eq', value: '$actor.customerId' }]),
+            grant('auditor', 'orders', ['read', 'update'], [{ column: 'status', op: 'eq', value: 'cancelled' }]),
+          ]),
+        }),
+        views,
+        actorFor: async (req) => JSON.parse(req.headers.get('x-actor') ?? 'null') ?? PUBLIC_ACTOR,
+      });
+      const dualCall = (method, segs, { actor, query = '', body } = {}) =>
+        dualRoutes.handle(new Request(`http://api.test/${segs.join('/')}${query ? `?${query}` : ''}`, { method, headers: { 'Content-Type': 'application/json', 'x-actor': JSON.stringify(actor) }, body: body ? JSON.stringify(body) : undefined }), segs);
+      const dual = { userId: 'dual', roles: ['member', 'auditor'], claims: { customerId: customer.customer_id } };
+      const [{ n: unionN }] = await raw("select count(*)::int as n from orders where customer_id = $1 or status = 'cancelled'", [customer.customer_id]);
+      const unionList = await jsonOf(await dualCall('GET', ['orders', 'list'], { actor: dual, query: 'pageSize=500' }));
+      ok('two restricted roles list the union over HTTP', unionList?.total === unionN && unionN > customer.n, `${unionList?.total} vs ${unionN}`);
+      const onlyAudit = (await raw("select id, notes from orders where status = 'cancelled' and customer_id is distinct from $1 limit 1", [customer.customer_id]))[0];
+      const neither = (await raw("select id from orders where status <> 'cancelled' and customer_id is distinct from $1 limit 1", [customer.customer_id]))[0];
+      ok('a row only the second role allows is 200', (await dualCall('GET', ['orders', 'record', String(onlyAudit.id)], { actor: dual })).status === 200);
+      ok('a row in neither group is 404', (await dualCall('GET', ['orders', 'record', String(neither.id)], { actor: dual })).status === 404);
+      const patchedAudit = await dualCall('PATCH', ['orders', 'record', String(onlyAudit.id)], { actor: dual, body: { notes: 'union-write' } });
+      ok('a write into a row only the second role allows is accepted', patchedAudit.status === 200 && (await jsonOf(patchedAudit))?.notes === 'union-write', String(patchedAudit.status));
+      await raw('update orders set notes = $2 where id = $1', [onlyAudit.id, onlyAudit.notes]);
+      ok('a write into a row in neither group is 404', (await dualCall('PATCH', ['orders', 'record', String(neither.id)], { actor: dual, body: { notes: 'x' } })).status === 404);
+    }
 
     /* ------------------------------ support ------------------------------- */
     const supportUser = (await raw("select ur.user_id from user_roles ur join roles r on r.id = ur.role_id where r.key = 'support' limit 1"))[0];

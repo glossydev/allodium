@@ -180,6 +180,13 @@ refuses rather than widens. Relation labels and picker options are reads of the 
 table and are gated as such, row scope included: an operator who may see only their own
 customer is not shown every customer's name down an orders list.
 
+An actor holding two roles that restrict a table differently gets the **union**: the
+grant compiles to `((a) or (b))` in one place, and every path — list, record, the
+post-write check, labels, pickers — takes the same union, so a write cannot land where a
+read could not see. Only the grant channel is a disjunction; the view's own filters and
+the operator's stay AND-only, because that is the filter language by design.
+`authorize()` returns those groups (`Predicate[][]`, `[[]]` for every row).
+
 Relation labels resolve in the **same query** as the rows, so a list does not become one
 query per row per relation.
 
