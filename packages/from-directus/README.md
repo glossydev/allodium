@@ -4,8 +4,13 @@ The exit ramp.
 
 > **Status: scaffolding.** This package is a deliberate placeholder — the name is
 > reserved and the plan is written, but building it credibly needs a live Directus
-> instance to test against, and that is its own piece of work. It is published at 0.0.1
-> so nobody else claims the name. **Do not depend on it yet.**
+> instance to test against, and that is its own piece of work. It is published so nobody
+> else claims the name. **Do not depend on it yet.**
+>
+> **The migration itself is documented and proven.** Read
+> [docs/migrating-from-directus.md](../../docs/migrating-from-directus.md) — the
+> seven-phase playbook, the idiom map, the auth cutover and the decommission transaction
+> from a real exit. Until this package exists, that document is the tool.
 
 ## Why leaving is easier than it looks
 

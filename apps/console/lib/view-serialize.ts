@@ -25,7 +25,7 @@ import { humanize } from '@allodium/admin/view';
  */
 
 /** Keys this module writes explicitly; anything else is carried through verbatim. */
-const KNOWN_ROOT = new Set(['$schema', 'table', 'title', 'description', 'display', 'primaryKey', 'fields', 'list', 'related']);
+const KNOWN_ROOT = new Set(['$schema', 'table', 'title', 'description', 'display', 'primaryKey', 'fields', 'list', 'related', 'links']);
 const KNOWN_LIST = new Set(['columns', 'pageSize', 'sort', 'searchColumns']);
 const KNOWN_FIELD = new Set([
   'kind', 'name', 'column', 'relation', 'through', 'near', 'far', 'farTable', 'farValue',
@@ -116,6 +116,21 @@ export function pruneDefaults(def: ViewDefinition): ViewDefinition {
       ...(r.references ? { references: r.references } : {}),
       ...(r.pageSize && r.pageSize !== 5 ? { pageSize: r.pageSize } : {}),
     }));
+  }
+
+  // Links record only what was chosen: `in` is dropped when it means both places,
+  // `target` when it is the same tab, `when` when it is empty.
+  if (def.links?.length) {
+    out.links = def.links.map((l) => {
+      const when = l.when === undefined ? undefined : Array.isArray(l.when) ? (l.when.length ? l.when : undefined) : Object.keys(l.when).length ? l.when : undefined;
+      return {
+        label: l.label,
+        href: l.href,
+        ...(when !== undefined ? { when } : {}),
+        ...(l.target && l.target !== '_self' ? { target: l.target } : {}),
+        ...(l.in && !(l.in.includes('list') && l.in.includes('form')) ? { in: l.in } : {}),
+      };
+    });
   }
 
   if (def.list) {

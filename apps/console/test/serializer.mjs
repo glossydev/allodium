@@ -57,9 +57,32 @@ const draftFor = (def) => ({
   pageSize: def.list?.pageSize ?? 25,
   searchColumns: def.list?.searchColumns ?? [],
   related: def.related ?? [],
+  links: def.links ?? [],
   implicitFields: !def.fields,
   source: def,
 });
+
+/* ------------------------------ links ------------------------------- */
+{
+  const withLinks = {
+    ...onDisk,
+    links: [
+      { label: 'View on site', href: '/orders/{order_number}', target: '_blank', when: [{ column: 'total', op: 'gt', value: 0 }] },
+      { label: 'Print', href: '/print/{order_number}', in: ['form'] },
+      { label: 'Defaults spelled out', href: '/x/{order_number}', target: '_self', in: ['list', 'form'], when: [] },
+    ],
+  };
+  const out = pruneDefaults(draftToDefinition(draftFor(withLinks)));
+  ok('links survive the round trip', out.links?.length === 3, JSON.stringify(out.links));
+  // Key order is the writer's choice; the content is what must survive.
+  const canon = (o) => JSON.stringify(o, (k, v) => (v && typeof v === 'object' && !Array.isArray(v) ? Object.fromEntries(Object.entries(v).sort()) : v));
+  ok('...keeping a condition, a new-tab target and a placement', canon(out.links?.[0]) === canon(withLinks.links[0]) && canon(out.links?.[1]) === canon(withLinks.links[1]), JSON.stringify(out.links?.slice(0, 2)));
+  ok('...and stripping defaults that were spelled out', JSON.stringify(out.links?.[2]) === JSON.stringify({ label: 'Defaults spelled out', href: '/x/{order_number}' }), JSON.stringify(out.links?.[2]));
+  const none = pruneDefaults(draftToDefinition(draftFor({ ...withLinks, links: [] })));
+  ok('an empty set of links writes no key', !('links' in none));
+  const removed = pruneDefaults(draftToDefinition({ ...draftFor(withLinks), links: [] }));
+  ok('links removed in the editor are gone from the file (the editor owns the key)', !('links' in removed));
+}
 
 /* ----------------------- related panels ---------------------------- */
 {

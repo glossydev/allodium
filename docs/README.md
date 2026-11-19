@@ -9,6 +9,9 @@ running the developer console against a database. Start here.
   the safety model and troubleshooting. Self-contained HTML; open it in a browser.
 - **[Act as](./act-as.md)** — the user switcher. Resolve the whole application as
   another user for testing and support, without replacing your session.
+- **[Migrating from Directus](./migrating-from-directus.md)** — the seven-phase playbook
+  from a real exit: the iron rules, the idiom map, the auth cutover, the decommission
+  transaction.
 
 > The console page is **generated**. `scripts/console-screenshots.mjs` drives a real
 > browser against a running console to capture the screenshots, and
@@ -40,8 +43,7 @@ Each package documents its own API and, more usefully, why its decisions were ma
 
 Honest list, so nobody hunts for something that isn't here:
 
-- A console tour, silo by silo, with screenshots
-- View definitions reference — every field of the admin view format
+- View definitions reference — every field of the admin view format (the JSON Schema
+  shipped with `@allodium/admin` is the reference for now)
 - Styling the generated admin — the full data-attribute contract
 - Deploying: what a production dashboard looks like
-- Migrating an existing Directus project, once `from-directus` is real

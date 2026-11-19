@@ -7,6 +7,7 @@ import { fetchJson, LoadingState, ErrorBox, Modal } from '@/ui/primitives';
 import type { ClientCatalog, ClientTable } from '../content/types';
 import PreviewPane from './PreviewPane';
 import FieldRow from './FieldRow';
+import LinksEditor from './LinksEditor';
 import { type Draft, type DraftField, type ViewDefinition, type Field, draftToDefinition, fieldKeyOf, fieldKind } from './types';
 
 /**
@@ -119,6 +120,7 @@ export default function AdminBuilder() {
         pageSize: definition.list?.pageSize ?? 25,
         searchColumns: definition.list?.searchColumns ?? [],
         related: definition.related ?? [],
+        links: definition.links ?? [],
         implicitFields,
         source: definition,
       };
@@ -572,6 +574,15 @@ export default function AdminBuilder() {
                 </>
               )}
             </div>
+
+            {/* Links out of the admin: a URL template over the row and a condition.
+                The addresses are the consumer's to know, so the editor only offers
+                the fields a template may read. */}
+            <LinksEditor
+              links={draft.links}
+              fieldKeys={included.filter((f) => f.field.kind !== 'm2m').map((f) => fieldKeyOf(f.field))}
+              onChange={(links) => setDraft({ ...draft, links })}
+            />
 
             {/* The artifact itself — no hiding what gets written. */}
             <details className="mt-4">

@@ -1,6 +1,6 @@
-import type { ViewDefinition, Field, ColumnField, RelationField, ManyToManyField, RelatedList } from '@allodium/admin/view';
+import type { ViewDefinition, Field, ColumnField, RelationField, ManyToManyField, RelatedList, ViewLink } from '@allodium/admin/view';
 
-export type { ViewDefinition, Field, ColumnField, RelationField, ManyToManyField, RelatedList };
+export type { ViewDefinition, Field, ColumnField, RelationField, ManyToManyField, RelatedList, ViewLink };
 
 /**
  * The builder's working shape.
@@ -31,6 +31,8 @@ export interface Draft {
   searchColumns: string[];
   /** Panels of rows belonging to this record — see RelatedList in the contract. */
   related: RelatedList[];
+  /** Links out of the admin, derived from the row — see ViewLink in the contract. */
+  links: ViewLink[];
   /**
    * The file on disk has no `fields` key, which the runtime reads as "every
    * visible column, including ones added later". Tracked so the editor can say
@@ -61,7 +63,10 @@ export const fieldKind = (f: Field): 'column' | 'relation' | 'm2m' => (f.kind ==
 /** Widgets offered per field kind — the runtime ignores anything else. */
 export const WIDGETS: Record<string, string[]> = {
   column: ['text', 'textarea', 'markdown', 'number', 'checkbox', 'select', 'radio', 'date', 'datetime', 'json', 'tags'],
-  relation: ['select', 'radio', 'autocomplete'],
+  // `file`: a relation to a files table, edited by uploading. Needs `uploads`
+  // configured on the app's admin routes; the console preview has none, so the
+  // widget renders disabled there and says so.
+  relation: ['select', 'radio', 'autocomplete', 'file'],
   m2m: ['checkboxes', 'multiselect', 'tags'],
 };
 
@@ -102,6 +107,11 @@ export function draftToDefinition(d: Draft): ViewDefinition {
   const related = d.related ?? [];
   if (related.length) def.related = related;
   else delete def.related;
+
+  // Same ownership rule for links.
+  const links = d.links ?? [];
+  if (links.length) def.links = links;
+  else delete def.links;
 
   const editorKeysEmpty = !list.columns.length && !list.searchColumns.length && list.pageSize === 25;
   const carriedKeys = Object.keys(list).filter((k) => !['columns', 'pageSize', 'searchColumns'].includes(k));
