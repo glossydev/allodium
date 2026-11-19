@@ -1,0 +1,22 @@
+{
+  "$schema": "../../../../node_modules/@allodium/admin/view.schema.json",
+  "table": "tags",
+  "display": "label",
+  "fields": [
+    {
+      "column": "id"
+    },
+    {
+      "column": "label"
+    },
+    {
+      "kind": "m2m",
+      "name": "posts",
+      "through": "post_tags",
+      "near": "tag_id",
+      "far": "post_id",
+      "farTable": "posts",
+      "display": "title"
+    }
+  ]
+}
