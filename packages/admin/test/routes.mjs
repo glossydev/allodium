@@ -170,7 +170,9 @@ if (!process.env.DATABASE_URL) {
     const byFn = createViewResolver(pool, { access: policy, views: async (t) => (t === 'authors' ? '{name} <{email}>' : undefined) });
     const fnLabel = String((await byFn.list(bare, { actor: PUBLIC_ACTOR, pageSize: 1 })).rows[0].author_id__label);
     ok('a function works as the source of displays too (template columns joined by a space)', fnLabel.includes('@') && fnLabel.includes(' '), fnLabel);
-    const m2mBorrow = await withViews.read({ table: 'posts', fields: [{ column: 'id' }, { kind: 'm2m', through: 'post_tags', near: 'post_id', far: 'tag_id', farTable: 'tags' }] }, 1, PUBLIC_ACTOR);
+    // A published post, not post 1: which posts are published is the fixture's business.
+    const [{ id: pubPostId }] = await raw("select id from posts where status = 'published' order by id limit 1");
+    const m2mBorrow = await withViews.read({ table: 'posts', fields: [{ column: 'id' }, { kind: 'm2m', through: 'post_tags', near: 'post_id', far: 'tag_id', farTable: 'tags' }] }, pubPostId, PUBLIC_ACTOR);
     ok('a many-to-many borrows the far view\'s display for its options', (await withViews.options({ table: 'posts', fields: [{ column: 'id' }, { kind: 'm2m', through: 'post_tags', near: 'post_id', far: 'tag_id', farTable: 'tags' }] }, 'tags', { actor: PUBLIC_ACTOR })).every((o) => typeof o.label === 'string' && o.label !== String(o.value)) && m2mBorrow !== null);
 
     /* ------------------------ a machine caller, by token ------------------------ */
