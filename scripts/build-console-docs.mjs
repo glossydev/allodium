@@ -23,11 +23,12 @@ const BODY = `
   <nav aria-label="Contents">
     <a href="#intro">Overview</a>
     <a href="#running">Running it</a>
-    <p class="railhead">The seven silos</p>
+    <p class="railhead">The eight silos</p>
     <a href="#schema"><span class="dot"></span>Schema</a>
     <a href="#content"><span class="dot"></span>Content</a>
     <a href="#users"><span class="dot"></span>Users</a>
     <a href="#roles"><span class="dot"></span>Roles &amp; Permissions</a>
+    <a href="#tokens"><span class="dot"></span>API tokens</a>
     <a href="#files"><span class="dot"></span>Files</a>
     <a href="#sql"><span class="dot"></span>SQL</a>
     <a href="#builder"><span class="dot"></span>Admin Builder</a>
@@ -186,10 +187,26 @@ npm run dev</code></pre>
   ${fig('roles-superadmin', 'Selecting super_admin shows an explanation rather than an empty grid — it bypasses the permission model entirely, so grants here would be a lie.')}
   <p>Grants for tables that no longer exist surface as a schema-drift block rather than rotting
   silently.</p>
-  <div class="warn">
-    <p><strong>The matrix stores permissions; nothing enforces them yet.</strong> These rows are
-    the definition your application will read once the generated dashboard consumes them. Today
-    they govern nothing — worth knowing before you rely on them.</p>
+  <div class="note">
+    <p><strong>The matrix is what the admin runtime enforces.</strong> A deployed dashboard and
+    a public site mount the same routes; the roles here, with their row filters, decide what each
+    caller may read and write. A row filter may walk foreign keys, so "the tasks whose project
+    belongs to this client" is a grant and not a query.</p>
+  </div>
+</section>
+
+<section id="tokens">
+  <h2><span class="silo">API tokens</span></h2>
+  <p>Bearer tokens for machine callers — a job runner, a deploy box, an agent’s tooling —
+  managed in one place, over the same store a deployed application resolves them with.</p>
+  ${fig('tokens', 'Minting a token. It acts as a user, taking that user’s roles at each request, or as a service with roles of its own. The plaintext is shown once; the database keeps only a digest.')}
+  <p>A token is shown exactly once, at minting. There is no "reveal" and never will be: a lost
+  token is replaced, not recovered. Each carries a label saying what holds it, an optional
+  expiry, a revocation, and when it was last seen — so the question "is anything still using
+  this?" has an answer.</p>
+  <div class="note">
+    <p><strong>A service token owns no rows.</strong> A grant on "your own records" denies it,
+    by design. Give services table-wide grants, scoped by role.</p>
   </div>
 </section>
 
@@ -322,10 +339,11 @@ npm run dev</code></pre>
     using rather than developing the console, <code>npm run console:prod</code> builds and serves
     production.</dd>
 
-    <dt><code>npm audit</code> reports high-severity findings</dt>
-    <dd>They are transitive through Next’s build tooling. <strong>Do not run
-    <code>npm audit fix --force</code></strong> — it would install <code>next@9.3.3</code>, six
-    major versions back. A project installing only the published packages reports zero.</dd>
+    <dt><code>next dev</code> stops to recommend a security upgrade</dt>
+    <dd>Next halts once when the installed version has a known advisory. Update it within
+    range (<code>npm update next</code>) and start again; the console tracks the current patch.
+    <strong>Never <code>npm audit fix --force</code></strong> — it has offered to install a
+    six-major-versions-old Next before.</dd>
   </dl>
 </section>
 

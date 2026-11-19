@@ -55,10 +55,19 @@ await page.waitForTimeout(1400);
 await shot('content-peek', 'FK hover peek');
 
 // 5 — Content row drawer with relation picker
-await page.locator('table tbody tr').nth(1).click();
+// The peek card from step 4 sits over the grid until the pointer leaves it, so
+// park the mouse first; then click a plain cell (not the FK arrow, which would
+// navigate) and wait for the drawer itself rather than a fixed delay.
+await page.mouse.move(8, 8);
+await page.waitForTimeout(500);
+const secondRow = page.locator('table tbody tr').nth(1);
+await secondRow.waitFor({ state: 'visible', timeout: T });
+await secondRow.locator('td').nth(1).click({ position: { x: 6, y: 6 } });
+await dlg().waitFor({ state: 'visible', timeout: T });
 await page.waitForTimeout(1200);
 await shot('content-drawer');
 await page.keyboard.press('Escape');
+await dlg().waitFor({ state: 'hidden', timeout: T }).catch(() => {});
 
 // 6 — Users, role-filtered
 await page.goto(`${B}/users`, { waitUntil: 'domcontentloaded' });
@@ -75,6 +84,14 @@ await page.getByRole('button', { name: /Customer Service/ }).first().click();
 await page.waitForSelector('table tbody tr', { timeout: T });
 await page.waitForTimeout(900);
 await shot('roles');
+
+// 7b — API tokens, with the minting form open
+await page.goto(`${B}/tokens`, { waitUntil: 'domcontentloaded' });
+await page.waitForSelector('table tbody tr, [class*="p-6"]', { timeout: T }).catch(() => {});
+await page.getByRole('button', { name: '+ New token' }).click();
+await page.waitForTimeout(900);
+await shot('tokens', 'minting form');
+await page.keyboard.press('Escape');
 
 // 8 — Files
 await page.goto(`${B}/files`, { waitUntil: 'domcontentloaded' });
